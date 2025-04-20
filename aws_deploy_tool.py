@@ -13,6 +13,7 @@ import argparse
 import sys
 import shlex
 import os
+import shutil
 
 # For the optional GUI
 import tkinter as tk
@@ -27,7 +28,45 @@ DEFAULT_REGION = "us-west-2"
 DEFAULT_AMI = "ami-09e67e426f25ce0d7"
 
 ###############################################################################
-# Utility functions
+# AWS CLI / Credential Checks
+###############################################################################
+
+
+def check_aws_cli_credentials(log_callback=None):
+    """
+    Checks if AWS CLI is installed and if credentials are configured.
+    Returns (True, account_id_str) if credentials exist, else (False, error_message).
+    Uses 'aws sts get-caller-identity --query "Account" --output text'.
+    """
+    cmd = "aws sts get-caller-identity --query Account --output text"
+    if log_callback:
+        log_callback(f"[RUN] {cmd}\n")
+
+    try:
+        process = subprocess.Popen(
+            shlex.split(cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        stdout, stderr = process.communicate()
+        rc = process.returncode
+
+        if rc != 0:
+            # CLI installed but credentials not configured or invalid
+            msg = (
+                f"[WARN] AWS CLI credentials not found or invalid:\n{stderr}\n"
+                "Please run 'aws configure' or set AWS credentials before proceeding.\n"
+            )
+            return (False, msg)
+        # If success, parse the account ID
+        account_id = stdout.strip()
+        return (True, account_id)
+    except FileNotFoundError:
+        # AWS CLI not installed
+        msg = "[ERROR] AWS CLI not installed. Please install AWS CLI and configure credentials.\n"
+        return (False, msg)
+
+
+###############################################################################
+# Utility functions for shell commands
 ###############################################################################
 
 
@@ -55,9 +94,39 @@ def run_cmd(cmd, log_callback=None, check=True):
     return stdout, stderr
 
 
+###############################################################################
+# AWS Resource Creation
+###############################################################################
+
+
+def move_pem_to_ssh_directory(pem_file_name, log_callback=None):
+    """
+    Moves the .pem file into ~/.ssh if not already there,
+    sets chmod 400, and returns the new path.
+    """
+    home = os.path.expanduser("~")
+    ssh_dir = os.path.join(home, ".ssh")
+    if not os.path.exists(ssh_dir):
+        os.makedirs(ssh_dir, exist_ok=True)
+
+    src = pem_file_name
+    dest = os.path.join(ssh_dir, os.path.basename(pem_file_name))
+    try:
+        shutil.move(src, dest)
+        os.chmod(dest, 0o400)
+        if log_callback:
+            log_callback(f"[INFO] Moved {pem_file_name} to {dest} and set chmod 400.\n")
+        return dest
+    except Exception as e:
+        if log_callback:
+            log_callback(f"[WARN] Could not move {pem_file_name} to {dest}: {e}\n")
+        return pem_file_name  # fallback
+
+
 def create_key_pair_if_needed(key_name, region, log_callback):
     """
-    Checks if the given Key Pair exists. If not, creates and saves <key_name>.pem locally.
+    Checks if the given Key Pair exists. If not, creates and saves <key_name>.pem locally,
+    then moves it to ~/.ssh.
     """
     cmd_check = f"aws ec2 describe-key-pairs --key-names {key_name} --region {region}"
     _, stderr = run_cmd(cmd_check, log_callback=log_callback, check=False)
@@ -70,9 +139,18 @@ def create_key_pair_if_needed(key_name, region, log_callback):
         with open(pem_file, "w") as f:
             f.write(stdout)
         os.chmod(pem_file, 0o400)
-        log_callback(f"[INFO] Key Pair created and saved to {pem_file} (chmod 400).\n")
+        log_callback(f"[INFO] Key Pair created locally: {pem_file} (chmod 400).\n")
+
+        # Move to ~/.ssh
+        new_path = move_pem_to_ssh_directory(pem_file, log_callback=log_callback)
+        return new_path
     else:
         log_callback(f"[INFO] Key Pair '{key_name}' already exists.\n")
+        # Assume user might have the .pem in ~/.ssh or somewhere else
+        # We won't forcibly re-download because AWS only provides private key once
+        # Return a guess of where it might be:
+        guessed_path = os.path.join(os.path.expanduser("~"), ".ssh", f"{key_name}.pem")
+        return guessed_path
 
 
 def create_security_group_if_needed(sg_name, region, log_callback):
@@ -335,6 +413,7 @@ def launch_ec2_instance(
     dns_out, _ = run_cmd(dns_cmd, log_callback=log_callback)
     public_dns = dns_out.strip()
     log_callback(f"[INFO] Instance Public DNS: {public_dns}\n")
+
     return instance_id, public_dns
 
 
@@ -345,9 +424,16 @@ def launch_ec2_instance(
 
 def deploy(args, log_callback):
     """
-    Orchestrates the entire flow: Key Pair, Security Group, EC2, Elastic IP, RDS (optional).
+    Orchestrates the entire flow:
+      - Check AWS creds,
+      - Key Pair (and move .pem to ~/.ssh),
+      - Security Group,
+      - EC2 + EIP,
+      - (Optional) RDS,
+      - Show SSH instructions.
     """
     try:
+        # 0) Check enable_rds is valid
         if args.enable_rds.lower() not in ["yes", "no"]:
             raise ValueError("--enable-rds must be 'yes' or 'no'")
 
@@ -362,28 +448,37 @@ def deploy(args, log_callback):
         db_username = args.db_username
         db_password = args.db_password
 
-        # 1) Create Key Pair if needed
-        create_key_pair_if_needed(key_name, region, log_callback)
+        # 1) Check AWS CLI / credentials
+        creds_ok, result_str = check_aws_cli_credentials(log_callback)
+        if creds_ok:
+            log_callback(f"[INFO] Signed in as account {result_str}\n")
+        else:
+            log_callback(result_str)
+            log_callback("[ERROR] Cannot proceed without valid AWS credentials.\n")
+            return  # or sys.exit(1)
 
-        # 2) Security Group
+        # 2) Create Key Pair if needed (and automatically move to ~/.ssh)
+        pem_path = create_key_pair_if_needed(key_name, region, log_callback)
+
+        # 3) Security Group
         sg_id = create_security_group_if_needed(
             "AppSecurityGroup", region, log_callback
         )
 
-        # 3) Create user-data
+        # 4) Create user-data
         user_data_script = create_userdata_script(domain, repo_url)
 
-        # 4) Launch EC2
+        # 5) Launch EC2
         instance_id, public_dns = launch_ec2_instance(
             ec2_name, key_name, sg_id, region, user_data_script, log_callback
         )
 
-        # 5) Allocate & associate Elastic IP
+        # 6) Allocate & associate Elastic IP
         alloc_id, eip = allocate_elastic_ip(region, log_callback)
         associate_elastic_ip(instance_id, alloc_id, region, log_callback)
         log_callback(f"[INFO] Your static IP is: {eip}\n")
 
-        # 6) Pause or skip for user DNS
+        # 7) Pause or skip for user DNS
         log_callback("\n--- DNS SETUP STEP ---\n")
         log_callback(
             "[INFO] To enable SSL for your domain, you should point an A-record of "
@@ -404,7 +499,7 @@ def deploy(args, log_callback):
                 "[INFO] Great! The instance user-data may succeed obtaining an SSL cert.\n"
             )
 
-        # 7) Optional RDS
+        # 8) Optional RDS
         if enable_rds:
             endpoint = create_rds_postgres(
                 db_identifier, db_username, db_password, region, log_callback
@@ -412,6 +507,10 @@ def deploy(args, log_callback):
             # Provide a handy DB connection URL
             db_url = f"postgresql://{db_username}:{db_password}@{endpoint}:5432/{db_identifier}"
             log_callback(f"[INFO] DB Connection URL: {db_url}\n")
+
+        # 9) Provide SSH instructions
+        ssh_cmd = f"ssh -i {pem_path} ec2-user@{eip}"
+        log_callback(f"\n[INFO] To SSH into your instance:\n  {ssh_cmd}\n")
 
         log_callback("\n[INFO] All steps completed.\n")
         log_callback(
@@ -424,6 +523,37 @@ def deploy(args, log_callback):
 
 
 ###############################################################################
+# SIGN OUT HELPER
+###############################################################################
+
+
+def sign_out_aws_credentials(log_callback=None):
+    """
+    Minimal approach to 'sign out' by unsetting environment variables
+    for AWS credentials. Tells the user they may also need to remove
+    or rename ~/.aws/credentials if they were using the default profile.
+
+    This won't forcibly remove credentials from your local machine
+    but ensures subsequent calls in this same Python process won't use them.
+    """
+    # Common environment variables that might hold AWS credentials
+    env_vars = [
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_PROFILE",
+    ]
+    for var in env_vars:
+        if var in os.environ:
+            del os.environ[var]
+    msg = "[INFO] Environment credentials cleared. If you want to fully switch accounts, run 'aws configure' again or manually edit ~/.aws/credentials.\n"
+    if log_callback:
+        log_callback(msg)
+    else:
+        print(msg)
+
+
+###############################################################################
 # GUI
 ###############################################################################
 
@@ -431,9 +561,26 @@ def deploy(args, log_callback):
 def launch_gui():
     """
     Simple tkinter GUI for collecting arguments and deploying.
+    Also shows AWS account info at the top if credentials are valid.
+    Adds a 'Sign Out' button to unset environment variables.
     """
     root = tk.Tk()
     root.title("AWS Deployment Tool")
+
+    # Check AWS credentials first
+    creds_ok, result_str = check_aws_cli_credentials()
+
+    if creds_ok:
+        acct_label_text = f"Signed in as account {result_str}"
+        acct_label_fg = "blue"
+    else:
+        acct_label_text = (
+            result_str.strip()
+        )  # e.g. "AWS CLI not installed or credentials missing..."
+        acct_label_fg = "red"
+
+    top_label = tk.Label(root, text=acct_label_text, fg=acct_label_fg)
+    top_label.grid(row=0, column=0, columnspan=2, padx=5, pady=5)
 
     # Default values
     defaults = {
@@ -462,8 +609,8 @@ def launch_gui():
 
     entries = {}
 
-    # Create form
-    row = 0
+    # Create form (start from row=1 because row=0 has the account label)
+    row = 1
     for field, label_text in labels.items():
         lbl = tk.Label(root, text=label_text)
         lbl.grid(row=row, column=0, padx=5, pady=5, sticky="e")
@@ -484,6 +631,13 @@ def launch_gui():
         root.update()
 
     def on_deploy():
+        # If credentials are not OK, do not proceed
+        if not creds_ok:
+            log_callback(
+                "[ERROR] AWS CLI not ready or credentials missing. Aborting.\n"
+            )
+            return
+
         gui_args = argparse.Namespace()
         gui_args.aws_region = entries["aws_region"].get().strip()
         gui_args.ec2_name = entries["ec2_name"].get().strip()
@@ -500,8 +654,24 @@ def launch_gui():
         except SystemExit as e:
             log_callback(f"[ERROR] {e}\n")
 
-    btn = ttk.Button(root, text="Deploy", command=on_deploy)
-    btn.grid(row=row + 1, column=0, columnspan=2, pady=10)
+    def on_sign_out():
+        """
+        Clears environment variables. The next check_aws_cli_credentials would fail
+        unless the user reconfigures. Also updates the label to indicate "signed out."
+        """
+        sign_out_aws_credentials(log_callback)
+        top_label.config(
+            text="Signed out (credentials cleared). Re-run 'aws configure' to sign in again.",
+            fg="red",
+        )
+
+    # Deploy button
+    btn_deploy = ttk.Button(root, text="Deploy", command=on_deploy)
+    btn_deploy.grid(row=row + 1, column=0, pady=10, sticky="e")
+
+    # Sign Out button
+    btn_signout = ttk.Button(root, text="Sign Out", command=on_sign_out)
+    btn_signout.grid(row=row + 1, column=1, pady=10, sticky="w")
 
     root.mainloop()
 
@@ -569,7 +739,16 @@ def main():
         def cli_log(msg):
             print(msg, end="", flush=True)
 
-        # Fill missing with defaults or prompts
+        # First, check credentials in CLI mode
+        creds_ok, result_str = check_aws_cli_credentials(cli_log)
+        if creds_ok:
+            cli_log(f"[INFO] Signed in as account {result_str}\n")
+        else:
+            cli_log(result_str)
+            cli_log("[ERROR] Cannot proceed without valid AWS credentials.\n")
+            sys.exit(1)
+
+        # Fill missing with defaults
         def default_val(cur, d):
             return cur if cur else d
 

@@ -1,0 +1,116 @@
+[RUN] aws sts get-caller-identity --query Account --output text
+[INFO] Signed in as account 245524871530
+[RUN] aws ec2 describe-key-pairs --key-names mauibuilder_keypair --region us-west-2
+{
+    "KeyPairs": [
+        {
+            "KeyPairId": "key-0c7c1979e136c8abb",
+            "KeyType": "rsa",
+            "Tags": [],
+            "CreateTime": "2025-04-21T03:01:07.669000+00:00",
+            "KeyName": "mauibuilder_keypair",
+            "KeyFingerprint": "2d:a7:ba:36:7a:34:da:a1:42:fb:4e:49:ed:10:69:ae:17:16:69:e5"
+        }
+    ]
+}
+[INFO] Key Pair 'mauibuilder_keypair' already exists.
+[RUN] aws ec2 describe-security-groups --filters Name=group-name,Values=AppSecurityGroup --region us-west-2
+{
+    "SecurityGroups": [
+        {
+            "GroupId": "sg-03e2a120bea027f02",
+            "IpPermissionsEgress": [
+                {
+                    "IpProtocol": "-1",
+                    "UserIdGroupPairs": [],
+                    "IpRanges": [
+                        {
+                            "CidrIp": "0.0.0.0/0"
+                        }
+                    ],
+                    "Ipv6Ranges": [],
+                    "PrefixListIds": []
+                }
+            ],
+            "VpcId": "vpc-08b0b5b1f3f1dc014",
+            "SecurityGroupArn": "arn:aws:ec2:us-west-2:245524871530:security-group/sg-03e2a120bea027f02",
+            "OwnerId": "245524871530",
+            "GroupName": "AppSecurityGroup",
+            "Description": "AppSecurityGroup",
+            "IpPermissions": [
+                {
+                    "IpProtocol": "tcp",
+                    "FromPort": 80,
+                    "ToPort": 80,
+                    "UserIdGroupPairs": [],
+                    "IpRanges": [
+                        {
+                            "CidrIp": "0.0.0.0/0"
+                        }
+                    ],
+                    "Ipv6Ranges": [],
+                    "PrefixListIds": []
+                },
+                {
+                    "IpProtocol": "tcp",
+                    "FromPort": 22,
+                    "ToPort": 22,
+                    "UserIdGroupPairs": [],
+                    "IpRanges": [
+                        {
+                            "CidrIp": "0.0.0.0/0"
+                        }
+                    ],
+                    "Ipv6Ranges": [],
+                    "PrefixListIds": []
+                },
+                {
+                    "IpProtocol": "tcp",
+                    "FromPort": 443,
+                    "ToPort": 443,
+                    "UserIdGroupPairs": [],
+                    "IpRanges": [
+                        {
+                            "CidrIp": "0.0.0.0/0"
+                        }
+                    ],
+                    "Ipv6Ranges": [],
+                    "PrefixListIds": []
+                }
+            ]
+        }
+    ]
+}
+[INFO] Security Group 'AppSecurityGroup' already exists: sg-03e2a120bea027f02
+[INFO] Launching EC2 (t3.micro) in us-west-2 with AMI ami-05572e392e80aee89...
+[RUN] aws ec2 run-instances         --image-id ami-05572e392e80aee89         --count 1         --instance-type t3.micro         --key-name mauibuilder_keypair         --security-group-ids sg-03e2a120bea027f02         --user-data file://userdata_deploy.txt         --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=mauibuilder}]'         --region us-west-2         --query 'Instances[0].InstanceId'         --output text
+    
+i-062b04c06de204687
+[INFO] Instance launched: i-062b04c06de204687
+[RUN] aws ec2 wait instance-running --instance-ids i-062b04c06de204687 --region us-west-2
+[INFO] EC2 instance is now running.
+[RUN] aws ec2 describe-instances --instance-ids i-062b04c06de204687 --region us-west-2 --query 'Reservations[0].Instances[0].PublicDnsName' --output text
+ec2-35-161-22-54.us-west-2.compute.amazonaws.com
+[INFO] Instance Public DNS: ec2-35-161-22-54.us-west-2.compute.amazonaws.com
+[RUN] aws ec2 allocate-address --domain vpc --region us-west-2 --query '[AllocationId,PublicIp]' --output text
+eipalloc-0c5e95088b1db76d4	100.21.145.141
+[INFO] Allocated Elastic IP: 100.21.145.141 (AllocationId: eipalloc-0c5e95088b1db76d4)
+[RUN] aws ec2 associate-address --instance-id i-062b04c06de204687 --allocation-id eipalloc-0c5e95088b1db76d4 --region us-west-2
+{
+    "AssociationId": "eipassoc-009a93c8971be032e"
+}
+[INFO] Elastic IP associated with instance.
+[INFO] Your static IP is: 100.21.145.141
+
+--- DNS SETUP STEP ---
+[INFO] To enable SSL for your domain, you should point an A-record of 'mauibuilder.ai' to '100.21.145.141' now.
+If you do it now, Let's Encrypt will succeed. If you skip, you'll have to re-run certbot later.
+[INFO] Great! The instance user-data may succeed obtaining an SSL cert.
+
+[INFO] To SSH into your instance:
+  ssh -i /Users/jacobvanalmelo/.ssh/mauibuilder_keypair.pem ec2-user@100.21.145.141
+
+[INFO] All steps completed.
+[INFO] Wait a few minutes for the user-data script to finish on the EC2 instance.
+[INFO] EC2: http://100.21.145.141 or https://mauibuilder.ai (once SSL is set up)
+

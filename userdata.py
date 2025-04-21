@@ -1,0 +1,102 @@
+# userdata.py
+
+
+def create_userdata_script(domain, repo_url):
+    """
+    Writes a cloud-init script for Amazon Linux 2.
+    Installs Python 3.12.8, Git, Apache, Certbot, etc.
+    Returns the filename path.
+    """
+    script_file = "userdata_deploy.txt"
+    with open(script_file, "w") as f:
+        f.write(
+            f"""#cloud-config
+package_update: true
+package_upgrade: all
+
+runcmd:
+  - yum update -y
+  - yum install -y git gcc openssl-devel bzip2-devel libffi-devel zlib-devel
+  - yum install -y httpd mod_ssl
+  - yum install -y certbot python3-certbot-apache
+  - yum install -y awscli tar make
+
+  # Build Python 3.12.8 from source
+  - cd /tmp
+  - curl -LO https://www.python.org/ftp/python/3.12.8/Python-3.12.8.tgz
+  - tar xzf Python-3.12.8.tgz
+  - cd Python-3.12.8
+  - ./configure --enable-optimizations
+  - make -j 2
+  - make altinstall
+  - python3.12 --version
+
+  # Create a venv
+  - python3.12 -m venv /home/ec2-user/venv
+  - /home/ec2-user/venv/bin/pip install --upgrade pip
+
+  # Pull code
+  - mkdir -p /home/ec2-user/app
+  - cd /home/ec2-user/app
+  - git init
+  - git remote add origin {repo_url}
+  - git pull origin main
+  - chown -R ec2-user:ec2-user /home/ec2-user/app
+
+  # pip install requirements
+  - /home/ec2-user/venv/bin/pip install fastapi gradio uvicorn supervisor
+
+  # Setup apache as a reverse proxy
+  - systemctl enable httpd
+  - systemctl start httpd
+
+  - yum install -y mod_proxy mod_proxy_http
+  - sed -i '/LoadModule proxy_module/s/^#//g' /etc/httpd/conf.modules.d/00-proxy.conf
+  - sed -i '/LoadModule proxy_http_module/s/^#//g' /etc/httpd/conf.modules.d/00-proxy.conf
+
+  # Attempt to get SSL cert
+  - certbot --apache --non-interactive --agree-tos -d {domain} -m admin@{domain} || true
+
+  # Apache config for domain + reverse proxy
+  - echo "<VirtualHost *:80>
+    ServerName {domain}
+    Redirect / https://{domain}/
+  </VirtualHost>
+
+  <VirtualHost *:443>
+    ServerName {domain}
+    SSLEngine on
+    SSLCertificateFile /etc/letsencrypt/live/{domain}/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/{domain}/privkey.pem
+    Include /etc/letsencrypt/options-ssl-apache.conf
+
+    ProxyPreserveHost On
+    ProxyRequests Off
+    ProxyPass / http://127.0.0.1:8000/
+    ProxyPassReverse / http://127.0.0.1:8000/
+  </VirtualHost>
+  " > /etc/httpd/conf.d/deploy.conf
+
+  - systemctl restart httpd
+
+  # Supervisor config for uvicorn
+  - mkdir -p /etc/supervisord.d
+  - echo "[supervisord]
+nodaemon=true
+
+[program:myapp]
+command=/home/ec2-user/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+directory=/home/ec2-user/app
+autostart=true
+autorestart=true
+stderr_logfile=/var/log/myapp_err.log
+stdout_logfile=/var/log/myapp_out.log
+" > /etc/supervisord.d/myapp.ini
+
+  - /home/ec2-user/venv/bin/pip install supervisor
+  - echo "supervisord -c /etc/supervisord.d/myapp.ini" >> /etc/rc.local
+  - supervisord -c /etc/supervisord.d/myapp.ini
+
+"""
+        )
+    return script_file

@@ -1,151 +1,218 @@
-## Overview
-This tool, aws_deploy_tool.py, automates provisioning of AWS resources for a Python web application (e.g., FastAPI+Gradio) with an Amazon Linux EC2 and an optional Postgres RDS instance. It sets up:
+# AWS Deployment Tool
 
-- Key Pair (if not found)
+A Python-based, modular toolkit for provisioning AWS infrastructure and deploying a FastAPI+Gradio (or similar) app on Amazon Linux EC2 (t3.micro). Supports:
 
-- Security Group with inbound rules (22, 80, 443)
+- VPC & Subnet (public or NAT) setup
+- Security Group and Key Pair management
+- EC2 instance launch with cloud-init user-data
+- Elastic IP allocation and association
+- Optional RDS Postgres provisioning
+- Tkinter GUI and CLI interfaces
 
-- EC2 t3.micro instance (Amazon Linux 2)
+---
 
-- Elastic IP (static IP)
+## Table of Contents
+1. [Features](#features)
+2. [Architecture & Modules](#architecture--modules)
+3. [Prerequisites](#prerequisites)
+4. [Installation](#installation)
+5. [Usage](#usage)
+   - [CLI Mode](#cli-mode)
+   - [GUI Mode](#gui-mode)
+6. [Configuration & Customization](#configuration--customization)
+7. [Step-by-Step Walkthrough](#step-by-step-walkthrough)
+8. [Troubleshooting & Adjustments](#troubleshooting--adjustments)
+9. [Contributing](#contributing)
+10. [License](#license)
 
-- Apache reverse proxy and Let’s Encrypt for SSL
+---
 
-- (Optional) RDS Postgres (Free Tier)
+## Features
 
-The script can run in two modes:
+- **Modular design**: Clean separation of networking, EC2, RDS, user-data, GUI, and CLI logic
+- **Flexible subnet**: Public (IGW) or outbound-only (NAT) subnets
+- **Idempotent**: Reuses existing VPCs, subnets, route tables, IGWs, NATs, key pairs, SGs
+- **Optional RDS**: Create a PostgreSQL instance with a single flag
+- **Automated deployment**: Launch instances with built-in cloud-init to install dependencies, clone your repo, and configure Apache + Uvicorn
+- **Dual interface**: Run via command line or a simple Tkinter GUI
 
-1. GUI Mode (tkinter): If you run the script without CLI arguments, it shows a simple GUI form for collecting inputs.
+---
 
-2. CLI Mode: Provide the required arguments (or rely on defaults), and it runs automatically—no GUI.
+## Architecture & Modules
+
+| Module                | Responsibility                                     |
+|-----------------------|----------------------------------------------------|
+| `aws_cli_utils.py`    | AWS CLI credential checks, shell command wrapper   |
+| `constants.py`        | Global constants (AMI IDs, default region, etc.)   |
+| `networking.py`       | VPC, subnet, route table, IGW/NAT provisioning     |
+| `ec2.py`              | Key pairs, security groups, instance launch, EIP   |
+| `rds.py`              | RDS Postgres provisioning                          |
+| `userdata.py`         | Generates cloud-init scripts                       |
+| `deploy.py`           | Orchestrates end-to-end deployment                 |
+| `cli.py`              | Command-line parsing and runner                    |
+| `gui.py`              | Tkinter-based GUI                                  |
+| `main.py`             | Entry point (`python -m aws_deploy_tool.main`)     |
+
+---
 
 ## Prerequisites
-1. AWS CLI must be installed and configured locally:
-```bash
-aws configure
-```
-2. Python 3 is needed locally to run the script.
 
-3. Domain Name: If you want SSL to work immediately, you should have a domain name that you can point to the EC2’s Elastic IP.
+- Python 3.8+ installed locally
+- AWS CLI v2 installed and configured (`aws configure`)
+- Your AWS credentials and permissions to create VPCs, EC2, RDS, etc.
+- Git access to your application repository
 
-4. GitHub Repo: The script will git pull from your specified repository URL. Ensure it’s public or your EC2 can clone it (if private, you’ll need a different approach for SSH keys).
+---
 
 ## Installation
-1. Place `aws_deploy_tool.py` in a directory on your local machine.
-2. Make it executable (options):
-`chmod +x aws_deploy_tool.py`
-3. Ensure you have the AWS CLI installed.
+
+1. Clone this repo:
+   ```bash
+   git clone https://github.com/youruser/aws_deploy_tool.git
+   cd aws_deploy_tool
+   ```
+2. (Optional) Create a virtual environment and install dependencies:
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install -r requirements.txt  # if you add any Python deps
+   ```
+
+---
 
 ## Usage
-Run: 
+
+### CLI Mode
+
+Run with flags to skip GUI:
 ```bash
-python aws_deploy_tool.py
-```
-
-No arguments → the tkinter GUI appears. You can:
-- Modify the default region, EC2 name, domain, etc.
-- Click Deploy to start the provisioning process.
-- Watch logs in the text box.
-
-When asked about DNS, point your domain’s A-record to the allocated Elastic IP if you want Let’s Encrypt to succeed immediately.
-
-2. CLI Mode
-Provide CLI arguments for a fully automated run. Example:
-```bash 
-python aws_deploy_tool.py \
+python -m aws_deploy_tool.main \
   --aws-region us-west-2 \
-  --ec2-name MyEC2Instance \
+  --ec2-name MyAppInstance \
   --key-name MyKeyPair \
-  --domain mydomain.com \
+  --domain example.com \
   --repo-url https://github.com/youruser/yourrepo.git \
+  --subnet-type public \
   --enable-rds yes \
-  --db-identifier myDB \
+  --db-identifier myapp-db \
   --db-username admin \
-  --db-password MyDbPassword123
+  --db-password SecretPass123 \
+  --no-gui
 ```
 
-The script will output logs to the console.
+### GUI Mode
 
-### Available arguments:
+Simply run without args:
+```bash
+python -m aws_deploy_tool.main
+```
+A Tkinter window will appear. Fill in fields and click **Deploy**.
 
-- --aws-region: (e.g. us-west-2)
+---
 
-- --ec2-name: Name tag for the EC2 instance
+## Configuration & Customization
 
-- --key-name: AWS Key Pair name
+- **Existing VPC/Subnet**: Edit `networking.py` to accept `--vpc-id` or `--subnet-id` flags and bypass creation logic.
+- **AMI Version**: Update `DEFAULT_AMI` in `constants.py`.
+- **User-Data**: Modify `create_userdata_script()` in `userdata.py` to install extra packages or change boot tasks.
+- **Security Rules**: Adjust port rules in `create_security_group_if_needed()` in `ec2.py`.
+- **RDS Settings**: Tweak instance class, storage, or engine version in `rds.py`.
 
-- --domain: Your domain (point an A-record to the allocated EIP)
+---
 
-- --repo-url: The Git repo to clone (main branch assumed)
+## Step-by-Step Walkthrough
 
-- --enable-rds: yes or no (default no)
+1. **Initialize & Credential Check**
+   - The tool starts by verifying that the AWS CLI is installed and credentials are configured (`check_aws_cli_credentials`).
+   - If missing, it aborts and prompts you to run `aws configure`.
 
-- --db-identifier: DB name/identifier for RDS
+2. **VPC Discovery/Creation**
+   - It looks for a VPC tagged `<EC2_NAME>-vpc` via `describe-vpcs`.
+   - If not found, creates a new VPC (`create-vpc --cidr-block 10.0.0.0/16`), tags it, and enables DNS hostnames.
 
-- --db-username: Postgres master username
+3. **Subnet & Routing**
+   - Searches for a subnet named `<EC2_NAME>-subnet`. If absent, it creates `10.0.1.0/24` in the first AZ.
+   - A route table `<EC2_NAME>-rtb` is found or created, then associated with the subnet.
+   - **Public Subnet (IGW)**: If `--subnet-type public`, the script finds or creates `<EC2_NAME>-igw`, attaches it to the VPC, and routes `0.0.0.0/0` to it. The subnet is set to auto-assign public IPs.
+   - **Outbound-only (NAT)**: If `--subnet-type nat`, it allocates an Elastic IP, creates `<EC2_NAME>-natgw`, waits for it, and routes `0.0.0.0/0` through the NAT gateway.
 
-- --db-password: Postgres master password
+4. **Key Pair Management**
+   - Checks for an existing key named `--key-name`.
+   - If missing, uses `create-key-pair` to generate one, saves the `.pem`, sets `chmod 400`, and moves it to `~/.ssh`.
 
-- --no-gui: Force CLI mode even if no arguments are given
+5. **Security Group**
+   - Looks for a group `<EC2_NAME>-sg`. If not present, creates it in the VPC and opens ports **22**, **80**, and **443**.
 
-## Flow
-1. Key Pair: Checks if `--key-name` exists. If missing, creates it and saves locally as `KeyName.pem`.
+6. **User-Data & Application Setup**
+   - Builds a `userdata_deploy.txt` cloud-init script:
+     - Updates packages and installs Git, Apache, Certbot, AWS CLI, etc.
+     - Builds Python 3.12.8 from source and creates a virtualenv.
+     - Clones your Git repo via HTTPS into `/home/ec2-user/app`.
+     - Installs required Python packages (`fastapi`, `gradio`, `uvicorn`, `supervisor`).
+     - Configures Apache as a reverse proxy and requests a Let’s Encrypt certificate for your domain.
 
-2. Security Group: Opens ports 22 (SSH), 80 (HTTP), 443 (HTTPS).
+7. **EC2 Launch**
+   - Runs `aws ec2 run-instances` with the chosen AMI, instance type, key, SG, subnet, and tags the instance `Name=<EC2_NAME>`.
+   - Waits for the instance to become `running`.
+   - Retrieves its Public DNS.
 
-3. EC2: Launches a `t3.micro` with Amazon Linux 2 in `us-west-2` (change AMI if you want a different region/OS).
+8. **Elastic IP for EC2**
+   - Allocates a fresh Elastic IP and associates it with the launched instance, giving you a static address.
 
-4. Elastic IP: Allocates and associates to the EC2—your instance has a static IP.
+9. **Optional RDS Provisioning**
+   - If `--enable-rds yes`, uses `create-db-instance` to spin up a `db.t3.micro` PostgreSQL.
+   - Waits for availability, then fetches its endpoint and prints a connection URL.
 
-5. DNS Prompt: The script will pause after EIP association, instructing you to point your domain’s DNS A-record to this IP.
+10. **Final Output**
+   - Prints instructions to SSH into the instance:
+     ```bash
+     ssh -i ~/.ssh/<key-name>.pem ec2-user@<Elastic IP>
+     ```
+   - Reminds you to point your DNS A-record to the EIP so that **Apache + Certbot** will serve your domain securely.
 
-    - Type `done` if DNS is set (Let’s Encrypt might succeed).
+---
 
-    - Type `skip` if you want to continue anyway (you’ll need to re-run certbot later).
+## Troubleshooting & Adjustments
 
-6. RDS (Optional): If `--enable-rds yes`, it creates a Postgres DB instance. On completion, it prints a DB connection URL you can copy (like `postgresql://admin:pass@endpoint:5432/myDB`).
+- **Credentials Errors**: Run `aws configure` or ensure env vars `AWS_ACCESS_KEY_ID` etc. are set.
+- **Resource Already Exists**: If a resource name conflicts, either delete it in the AWS Console or change your `ec2_name` to avoid collision.
+- **Timeouts**: For large environments, AWS `wait` commands may take several minutes—be patient or increase CLI timeouts.
+- **Incomplete User-Data**: Inspect `/var/log/cloud-init-output.log` on the EC2 instance for errors.
+- **Repo Folder Not Found**:
+  - By default, your repository is cloned via cloud-init into `/home/ec2-user/app` on the instance.
+  - Verify the directory exists:
+    ```bash
+    ssh -i ~/.ssh/<key-name>.pem ec2-user@<Elastic IP>
+    ls -l /home/ec2-user/app
+    ```
+  - If the folder is missing or empty, check cloud-init logs:
+    ```bash
+    sudo cat /var/log/cloud-init-output.log | grep git
+    ```
+  - Ensure your `repo_url` is correct and publicly accessible (or adjust for private repos using a token or SSH key in `userdata.py`).
+  - **Rerunning the Build**: Cloud-init runs only once on first launch. If you need to re-clone or reapply user-data:
 
-7. User-Data: On first boot, the EC2 runs a cloud-init script that:
+1. **Destroy and re-launch** the EC2 instance using the tool so cloud-init executes again.
+2. Or manually re-run cloud-init on your existing instance:
+   ```bash
+   # Re-initialize cloud-init
+   sudo cloud-init init
 
-    - Builds Python 3.12.8 from source
+   # Re-configure: processes data sources, modules in 'config' stage
+   sudo cloud-init modules --mode=config
 
-    - Installs Git, Apache, Let’s Encrypt, etc.
+   # Final stage: executes 'runcmd' and other final modules
+   sudo cloud-init modules --mode=final
+   ```
 
-    - Clones your specified repo
+   - `cloud-init init` re-initializes the instance's cloud-init run stages, clearing any status cache and starting from scratch.
+   - `cloud-init modules --mode=config` processes configuration modules, pulling in metadata and writing files like `userdata_deploy.txt`.
+   - `cloud-init modules --mode=final` executes the final modules, including the `runcmd` section in your user-data, which contains the git clone, package installs, and service configuration.
 
-    - Installs your Python dependencies (`fastapi`, `gradio`, `uvicorn`, `supervisor`)
+   Running these three commands simulates the first-boot sequence without recreating the instance, effectively reapplying your cloud-init user-data.
 
-    - Configures Apache as a reverse proxy on `443` → `127.0.0.1:8000`
+   **Note**: Some modules only run once by default; you may need to clear `/var/lib/cloud/instances` if re-running fails.
+```
 
-    - Attempts to acquire an SSL cert from Let’s Encrypt (if DNS is set up)
-
-    - Launches `uvicorn main:app` via Supervisor
-
-## Tips and Customization
-1. AMI ID: The default `ami-09e67e426f25ce0d7` is for Amazon Linux 2 in `us-west-2` (x86_64). If you use another region or architecture, find the appropriate AMI ID and update `DEFAULT_AMI`.
-
-2. t3.micro: Adjust to a larger instance if building Python 3.12.8 is too slow or you need more resources.
-
-3. User-Data: Modify the commands in `create_userdata_script()` if you have a different setup (e.g., you don’t need custom building of Python).
-
-4. Private Git Repo: For private repos, the script does a simple `git pull`. You’d need to add credentials (SSH key, etc.) or another approach if your repo is not public.
-
-5. Production Hardening:
-
-    - Consider a process manager like Systemd or Docker-based deployment instead of Supervisor.
-
-    - Add logging, monitoring (CloudWatch), and backups.
-
-    - For large loads, consider an ALB + Auto Scaling Group.
-
-## Troubleshooting
-- AWS CLI not found: Ensure `aws --version` works on your machine.
-
-- Credentials: If you see “unable to locate credentials,” run aws configure again.
-
-- AMI not found: Make sure your region is correct.
-
-- DNS: If Let’s Encrypt fails to verify domain, confirm your domain A-record points to the allocated EIP.
-
-- Exiting: If any command fails, the script sys.exits with an error message in logs.
+---
 

@@ -1,0 +1,236 @@
+[RUN] aws sts get-caller-identity --query Account --output text
+[INFO] Signed in as account 245524871530
+[RUN] aws ec2 describe-vpcs --region us-west-2 --filters Name=tag:Name,Values=mauibuilder-vpc
+{
+    "Vpcs": [
+        {
+            "OwnerId": "245524871530",
+            "InstanceTenancy": "default",
+            "CidrBlockAssociationSet": [
+                {
+                    "AssociationId": "vpc-cidr-assoc-0eb8c0ea7b88615b7",
+                    "CidrBlock": "10.0.0.0/16",
+                    "CidrBlockState": {
+                        "State": "associated"
+                    }
+                }
+            ],
+            "IsDefault": false,
+            "Tags": [
+                {
+                    "Key": "Name",
+                    "Value": "mauibuilder-vpc"
+                }
+            ],
+            "BlockPublicAccessStates": {
+                "InternetGatewayBlockMode": "off"
+            },
+            "VpcId": "vpc-01d03fd60c2223011",
+            "State": "available",
+            "CidrBlock": "10.0.0.0/16",
+            "DhcpOptionsId": "dopt-054bbeb20687c4460"
+        }
+    ]
+}
+[INFO] Reusing existing VPC vpc-01d03fd60c2223011 (mauibuilder-vpc).
+[RUN] aws ec2 describe-subnets --region us-west-2 --filters Name=tag:Name,Values=mauibuilder-subnet Name=vpc-id,Values=vpc-01d03fd60c2223011
+{
+    "Subnets": [
+        {
+            "AvailabilityZoneId": "usw2-az1",
+            "MapCustomerOwnedIpOnLaunch": false,
+            "OwnerId": "245524871530",
+            "AssignIpv6AddressOnCreation": false,
+            "Ipv6CidrBlockAssociationSet": [],
+            "Tags": [
+                {
+                    "Key": "Name",
+                    "Value": "mauibuilder-subnet"
+                }
+            ],
+            "SubnetArn": "arn:aws:ec2:us-west-2:245524871530:subnet/subnet-0b187c10b926cf922",
+            "EnableDns64": false,
+            "Ipv6Native": false,
+            "PrivateDnsNameOptionsOnLaunch": {
+                "HostnameType": "ip-name",
+                "EnableResourceNameDnsARecord": false,
+                "EnableResourceNameDnsAAAARecord": false
+            },
+            "BlockPublicAccessStates": {
+                "InternetGatewayBlockMode": "off"
+            },
+            "SubnetId": "subnet-0b187c10b926cf922",
+            "State": "available",
+            "VpcId": "vpc-01d03fd60c2223011",
+            "CidrBlock": "10.0.1.0/24",
+            "AvailableIpAddressCount": 251,
+            "AvailabilityZone": "us-west-2a",
+            "DefaultForAz": false,
+            "MapPublicIpOnLaunch": true
+        }
+    ]
+}
+[INFO] Reusing existing subnet subnet-0b187c10b926cf922 (mauibuilder-subnet).
+[RUN] aws ec2 describe-route-tables --region us-west-2 --filters Name=tag:Name,Values=mauibuilder-rtb Name=vpc-id,Values=vpc-01d03fd60c2223011
+{
+    "RouteTables": [
+        {
+            "Associations": [
+                {
+                    "Main": false,
+                    "RouteTableAssociationId": "rtbassoc-0442c63d0d6d4e56e",
+                    "RouteTableId": "rtb-0abdfb86ba17c01f8",
+                    "SubnetId": "subnet-0b187c10b926cf922",
+                    "AssociationState": {
+                        "State": "associated"
+                    }
+                }
+            ],
+            "PropagatingVgws": [],
+            "RouteTableId": "rtb-0abdfb86ba17c01f8",
+            "Routes": [
+                {
+                    "DestinationCidrBlock": "10.0.0.0/16",
+                    "GatewayId": "local",
+                    "Origin": "CreateRouteTable",
+                    "State": "active"
+                },
+                {
+                    "DestinationCidrBlock": "0.0.0.0/0",
+                    "GatewayId": "igw-0b5b669f6a8035074",
+                    "Origin": "CreateRoute",
+                    "State": "active"
+                }
+            ],
+            "Tags": [
+                {
+                    "Key": "Name",
+                    "Value": "mauibuilder-rtb"
+                }
+            ],
+            "VpcId": "vpc-01d03fd60c2223011",
+            "OwnerId": "245524871530"
+        }
+    ]
+}
+[INFO] Reusing route table rtb-0abdfb86ba17c01f8 (mauibuilder-rtb).
+[RUN] aws ec2 associate-route-table --route-table-id rtb-0abdfb86ba17c01f8 --subnet-id subnet-0b187c10b926cf922 --region us-west-2
+{
+    "AssociationId": "rtbassoc-0442c63d0d6d4e56e",
+    "AssociationState": {
+        "State": "associated"
+    }
+}
+[RUN] aws ec2 describe-internet-gateways --region us-west-2 --filters Name=tag:Name,Values="mauibuilder-igw"
+{
+    "InternetGateways": [
+        {
+            "Attachments": [
+                {
+                    "State": "available",
+                    "VpcId": "vpc-01d03fd60c2223011"
+                }
+            ],
+            "InternetGatewayId": "igw-0b5b669f6a8035074",
+            "OwnerId": "245524871530",
+            "Tags": [
+                {
+                    "Key": "Name",
+                    "Value": "mauibuilder-igw"
+                }
+            ]
+        }
+    ]
+}
+[INFO] Reusing IGW igw-0b5b669f6a8035074 (mauibuilder-igw).
+[RUN] aws ec2 create-route --route-table-id rtb-0abdfb86ba17c01f8 --destination-cidr-block 0.0.0.0/0 --gateway-id igw-0b5b669f6a8035074 --region us-west-2
+{
+    "Return": true
+}
+[RUN] aws ec2 modify-subnet-attribute --subnet-id subnet-0b187c10b926cf922 --map-public-ip-on-launch --region us-west-2
+[INFO] Public subnet setup complete.
+[RUN] aws ec2 describe-key-pairs --key-names mauibulider_keypair --region us-west-2
+
+An error occurred (InvalidKeyPair.NotFound) when calling the DescribeKeyPairs operation: The key pair 'mauibulider_keypair' does not exist
+[INFO] Creating Key Pair 'mauibulider_keypair'...
+[RUN] aws ec2 create-key-pair --key-name mauibulider_keypair --region us-west-2 --query 'KeyMaterial' --output text
+-----BEGIN RSA PRIVATE KEY-----
+MIIEpAIBAAKCAQEAoFFEA/Xusgtp3TlTZXgt1yDcUJvQH0CNf/by4LUYp83rZnbK
+8cIrg7Jtij+cnFZtM1pGh5xqyKpMfjNlv9JBotU/ShA2qZhA6ddqGbdPFX+lbelE
+FMSvHgp0CHjlDNNRBWNeXU0Sq8ahb7ltIHhjVUk9QSmsRg9PQqxg9lUaPmyEZprz
+Cn3SUESar04mU9eDmkzxEgPK38uJBJsXMZRF847745m+jWgGPrYmbS5NNj/HbG14
+44cs973BLsrGZNOIYfIo3nme/K+V/0kh2JGsvGlX362xiOqbBJYcE/HOToQPBjgo
+Jkhc16zMk6t92kTaQv5lbuOP6N9ovms7ybxbsQIDAQABAoIBAQCAW5CRez753pmM
+PnG/NFG/hNfg0l/4Jb8lTZt4voZXFE/9Ye9rUYN1lk6N+hByO+CC1SzTNzFoKLHF
++XDl/HoA3awmqISblQOkNo0Eufffxqu1LKcN2cw7yTLN9b2uXyLnpX/QQ/1G+2oW
+AeiVrs4ZYuJgYfVEws07HLklgU3Z29QvEggL1m/7f2ucQkGeJgoxjvntO0yID1RG
+Z5L8d3ZUnurmkflhaoGRftaFgxlvj+W4LQdYeoeO6bATkE11wDC8SDUW7VVHSxNN
+Ay57ngNUXFOvTawjhvwpEB3IjaElSzj9p/tY0thMwk4/OpRT6oJKffUjKrIHOlDo
+DYrOR4RhAoGBANGLOmBhiv4bbTWfzK0K/RW0c1Du5H01YY0d45RSkP7AGaKeQPqO
+4bwsJikSPB5H/qQTRpWJJlg/ViWSfn9cILcbClFSNPV85xu2Igm5yEyyWPh+eW6O
+R0A+GyEh3fOpY60SCtmVfOFU2m+3aOT67f6KkkMPN9P0QjqUwLFCSlTTAoGBAMPc
+KqMkIr1TP7oq9Fm1AgsdMH11LXZ5m3QMNMq0zx605Xw3HayFPQPMYkj5jrM7BUdf
+dh883LaK96J+SCKgz6sVXxysxMc3uzvWNzxYpYzpoaSuDFsYDT7UULdNgk05TaqL
+xB2AI0GXiLyiI9Lq+duUM3bKdWrrTbbB5F7B5srrAoGAea2HcIAz3eq/N+xbRgCj
+hf8LF2whcjOVOgSpKm/nkoaqXCvZP6XInyRj5GWaU1srGsu2qQ7DHWtp8tdmbT5q
+IOmqzB4YcpTc/tJ8YXloPmEyGNoYWYJ1DXEC//JSmDM8ljtr4X1UzuQfE9BFMPIl
+UTHWTOqBWKr16l6GpmgAEdECgYBXPdKgKJBw1IwmWMvOyZnHaZEX0QIXK8PaxTUe
+tbssalduJP7Kwe6Tqo59AuxVWYzYZeUvtOR7SxtS/f0Tr53RDwv2sd5U/rYfySOB
+ddsIEWk2+W/3g5cizV/Gxner/kJiHS+WFGWf6ee2XmKmqJPzAuiJmVUD8xwCtAsN
+SkGLUQKBgQCcooo8hiQwHBSn7FM5NUgd7ndZuQjZIN7anU0fuq8Ve82ruHMlEyR+
+S8mAibB+OOw8csd8AprvYMQSN2JOeqEFSGkVoUY24GXjQ5rwQvwEZodVHV5NiiXl
+LxCTMV2yN5lRUdzOW5Dcdm61wLTV0lpocTNTfZvrUBxWQZ+3hJ/JAA==
+-----END RSA PRIVATE KEY-----
+[INFO] Key Pair created locally: mauibulider_keypair.pem (chmod 400).
+[INFO] Moved mauibulider_keypair.pem to /Users/jacobvanalmelo/.ssh/mauibulider_keypair.pem (chmod 400).
+[RUN] aws ec2 describe-security-groups --filters Name=group-name,Values=mauibuilder-sg --region us-west-2 --query 'SecurityGroups[*].GroupId' --output text
+sg-058e63dc778c6ca81
+[INFO] Security Group 'mauibuilder-sg' already exists: sg-058e63dc778c6ca81
+[INFO] Launching EC2 (t3.micro) in us-west-2 with AMI ami-05572e392e80aee89...
+[DEBUG] Executing EC2 run-instances command:
+aws ec2 run-instances         --image-id ami-05572e392e80aee89         --count 1         --instance-type t3.micro         --key-name mauibulider_keypair         --security-group-ids sg-058e63dc778c6ca81         --subnet-id subnet-0b187c10b926cf922         --user-data file://userdata_deploy.txt         --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=mauibuilder}]'         --region us-west-2         --query 'Instances[0].InstanceId'         --output text
+    
+[RUN] aws ec2 run-instances         --image-id ami-05572e392e80aee89         --count 1         --instance-type t3.micro         --key-name mauibulider_keypair         --security-group-ids sg-058e63dc778c6ca81         --subnet-id subnet-0b187c10b926cf922         --user-data file://userdata_deploy.txt         --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=mauibuilder}]'         --region us-west-2         --query 'Instances[0].InstanceId'         --output text
+    
+i-0a5e7fbb14b23a8f6
+[INFO] Instance launched: i-0a5e7fbb14b23a8f6
+[DEBUG] Waiting for instance to enter running state with command:
+aws ec2 wait instance-running --instance-ids i-0a5e7fbb14b23a8f6 --region us-west-2
+[RUN] aws ec2 wait instance-running --instance-ids i-0a5e7fbb14b23a8f6 --region us-west-2
+[INFO] EC2 instance is now running.
+[DEBUG] Retrieving public DNS with command:
+aws ec2 describe-instances --instance-ids i-0a5e7fbb14b23a8f6 --region us-west-2 --query 'Reservations[0].Instances[0].PublicDnsName' --output text
+[RUN] aws ec2 describe-instances --instance-ids i-0a5e7fbb14b23a8f6 --region us-west-2 --query 'Reservations[0].Instances[0].PublicDnsName' --output text
+ec2-35-93-156-205.us-west-2.compute.amazonaws.com
+[INFO] Instance Public DNS: ec2-35-93-156-205.us-west-2.compute.amazonaws.com
+[INFO] SSH config updated: Host entry for mauibuilder added to /Users/jacobvanalmelo/.ssh/config
+[RUN] aws ec2 allocate-address --domain vpc --region us-west-2 --query '[AllocationId,PublicIp]' --output text
+eipalloc-0f09406049c87e6a6	34.214.109.152
+[RUN] aws ec2 create-tags --resources eipalloc-0f09406049c87e6a6 --tags Key=Name,Value=mauibuilder_EIP --region us-west-2
+[INFO] Allocated Elastic IP: 34.214.109.152 (AllocationId: eipalloc-0f09406049c87e6a6)
+[RUN] aws ec2 associate-address --instance-id i-0a5e7fbb14b23a8f6 --allocation-id eipalloc-0f09406049c87e6a6 --region us-west-2
+{
+    "AssociationId": "eipassoc-0ece504215d2ee22d"
+}
+[INFO] Elastic IP associated with instance.
+[INFO] Your static IP is: 34.214.109.152
+
+--- DNS SETUP STEP ---
+[INFO] Please add or update an A-record in your domain registrar's DNS so that mauibuilder.ai points to 34.214.109.152.
+[INFO] This is required to enable SSL with certbot later. If you'd like to test without SSL, you can skip this.
+[INFO] Great! DNS should now point to your EC2's IP.
+[INFO] Waiting for EC2 to pass status checks (this ensures cloud-init has time to finish)...
+[RUN] aws ec2 wait instance-status-ok --instance-ids i-0a5e7fbb14b23a8f6 --region us-west-2
+[INFO] EC2 instance passed basic status checks. Attempting to retrieve console output...
+[RUN] aws ec2 get-console-output --instance-id i-0a5e7fbb14b23a8f6 --region us-west-2 --output text
+i-0a5e7fbb14b23a8f6		2025-04-24T23:48:37+00:00
+[INFO] Last 30 lines of console output (for debug):
+i-0a5e7fbb14b23a8f6		2025-04-24T23:48:37+00:00
+
+[INFO] To SSH into your instance:
+  ssh -i /Users/jacobvanalmelo/.ssh/mauibulider_keypair.pem ec2-user@34.214.109.152
+
+[INFO] All steps completed.
+[INFO] Wait a few more minutes if needed for any long-running cloud-init processes.
+[INFO] Once DNS is configured, you can test: https://mauibuilder.ai
+

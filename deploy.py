@@ -1,6 +1,8 @@
 # deploy.py
 
 import sys
+import os
+import subprocess
 from .aws_cli_utils import check_aws_cli_credentials, run_cmd
 from .networking import create_vpc_if_needed, create_subnet_and_route
 from .ec2 import (
@@ -70,9 +72,34 @@ def deploy(args, log_callback):
         )
 
         # 8) EIP
-        alloc_id, eip = allocate_elastic_ip(region, log_callback)
+        alloc_id, eip = allocate_elastic_ip(ec2_name, region, log_callback)
         associate_elastic_ip(instance_id, alloc_id, region, log_callback)
         log_callback(f"[INFO] Your static IP is: {eip}\n")
+        # Update SSH config with static Elastic IP
+        dashed_ip = eip.replace(".", "-")
+        ssh_config_path = os.path.expanduser("~/.ssh/config")
+        entry = (
+            f"\nHost {ec2_name}\n"
+            f"    HostName ec2-{dashed_ip}.us-west-2.compute.amazonaws.com\n"
+            f"    User ec2-user\n"
+            f"    IdentityFile ~/.ssh/{key_name}.pem\n"
+        )
+        try:
+            with open(ssh_config_path, "a") as f:
+                f.write(entry)
+            log_callback(f"[INFO] SSH config updated: Host entry for {ec2_name} added with EIP to {ssh_config_path}\n")
+        except Exception as e:
+            log_callback(f"[WARN] Failed to update SSH config: {e}\n")
+
+        # Open a new macOS Terminal window to SSH into the instance
+        try:
+            subprocess.run([
+                "osascript", "-e",
+                f'tell application "Terminal" to do script "ssh {ec2_name}"'
+            ])
+            log_callback(f"[INFO] Launched Terminal.app and started SSH session to {ec2_name}\n")
+        except Exception as e:
+            log_callback(f"[WARN] Failed to launch Terminal SSH session: {e}\n")
 
         # Domain reminder
         log_callback("\n--- DNS SETUP STEP ---\n")

@@ -89,13 +89,21 @@ def create_security_group_if_needed(ec2_name, region, vpc_id, log_callback):
     return sg_id
 
 
-def allocate_elastic_ip(region, log_callback):
+def allocate_elastic_ip(ec2_name, region, log_callback):
     cmd = (
         f"aws ec2 allocate-address --domain vpc --region {region} "
         f"--query '[AllocationId,PublicIp]' --output text"
     )
     stdout, _ = run_cmd(cmd, log_callback=log_callback)
     alloc_id, public_ip = stdout.split()
+
+    # Tag Elastic IP with Name
+    tag_cmd = (
+        f"aws ec2 create-tags --resources {alloc_id} "
+        f"--tags Key=Name,Value={ec2_name}_EIP --region {region}"
+    )
+    run_cmd(tag_cmd, log_callback=log_callback)
+
     log_callback(
         f"[INFO] Allocated Elastic IP: {public_ip} (AllocationId: {alloc_id})\n"
     )
@@ -130,6 +138,7 @@ def launch_ec2_instance(
         --query 'Instances[0].InstanceId' \
         --output text
     """
+    log_callback(f"[DEBUG] Executing EC2 run-instances command:\n{cmd_launch}\n")
     stdout, _ = run_cmd(cmd_launch, log_callback=log_callback)
     instance_id = stdout.strip()
 
@@ -139,6 +148,7 @@ def launch_ec2_instance(
     wait_cmd = (
         f"aws ec2 wait instance-running --instance-ids {instance_id} --region {region}"
     )
+    log_callback(f"[DEBUG] Waiting for instance to enter running state with command:\n{wait_cmd}\n")
     run_cmd(wait_cmd, log_callback=log_callback)
     log_callback("[INFO] EC2 instance is now running.\n")
 
@@ -147,8 +157,10 @@ def launch_ec2_instance(
         f"aws ec2 describe-instances --instance-ids {instance_id} --region {region} "
         f"--query 'Reservations[0].Instances[0].PublicDnsName' --output text"
     )
+    log_callback(f"[DEBUG] Retrieving public DNS with command:\n{dns_cmd}\n")
     dns_out, _ = run_cmd(dns_cmd, log_callback=log_callback)
     public_dns = dns_out.strip()
     log_callback(f"[INFO] Instance Public DNS: {public_dns}\n")
+
 
     return instance_id, public_dns

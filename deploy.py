@@ -1,6 +1,7 @@
 import os
 import sys
 import subprocess
+import shlex
 
 from tqdm import tqdm
 
@@ -32,6 +33,10 @@ def deploy(args, log, progress_callback=None):
             components.add("enable_rds")
     enable_rds = "enable_rds" in components
     userdata_chunks = components - {"enable_rds"}
+
+    # Determine code deployment method
+    source_method = getattr(args, "source_method", "git")  # "git" or "copy"
+    local_path = getattr(args, "local_path", None)
 
     ec2_name = args.ec2_name
     key_name = args.key_name
@@ -110,6 +115,21 @@ def deploy(args, log, progress_callback=None):
     )
     step_complete()
 
+    # Pull or copy application code
+    if source_method == "git":
+        run_cmd(f"cd /home/ec2-user/app && git init && git remote add origin {repo_url} && git pull origin main", log)
+    else:
+        if not local_path:
+            log("[ERROR] local_path not provided for copy method\n")
+            if progress_callback:
+                return
+            else:
+                sys.exit(1)
+        # Copy via scp
+        run_cmd(f"scp -r {shlex.quote(local_path)} ec2-user@{public_dns}:/home/ec2-user/app", log)
+    run_cmd("chown -R ec2-user:ec2-user /home/ec2-user/app", log)
+    run_cmd("/home/ec2-user/venv/bin/pip install fastapi gradio uvicorn supervisor", log)
+
     # 2.8 Elastic IP
     alloc_id, eip = allocate_elastic_ip(ec2_name, region, log)
     associate_elastic_ip(instance_id, alloc_id, region, log)
@@ -151,6 +171,8 @@ if __name__ == "__main__":
     parser.add_argument("--db_id", default=None)
     parser.add_argument("--db_user", default=None)
     parser.add_argument("--db_pass", default=None)
+    parser.add_argument("--source-method", default="git", choices=["git","copy"], help="git clone or scp copy")
+    parser.add_argument("--local-path", default=None, help="Local directory path to copy when using copy method")
     args = parser.parse_args()
 
     deploy(args, log)

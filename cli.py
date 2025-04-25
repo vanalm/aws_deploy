@@ -35,6 +35,8 @@ def parse_args():
     parser.add_argument(
         "--no-gui", action="store_true", help="Run CLI-only (skip tkinter GUI)"
     )
+    parser.add_argument("--source-method", default="git", choices=["git","copy"], help="git clone or scp copy")
+    parser.add_argument("--local-path", default=None, help="Local directory path to copy when using copy method")
     return parser.parse_args()
 
 

@@ -122,12 +122,37 @@ def launch_gui():
 
     on_enable_rds_change()  # init state
 
+    # Add Code source frame with Radiobuttons
+    source_frame = tk.LabelFrame(root, text="Code source")
+    source_frame.grid(row=rds_row_start + 3, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
+    source_var = tk.StringVar(value="git")
+    rb1 = tk.Radiobutton(source_frame, text="Git Clone", variable=source_var, value="git")
+    rb2 = tk.Radiobutton(source_frame, text="Local Copy", variable=source_var, value="copy")
+    rb1.grid(row=0, column=0, padx=5)
+    rb2.grid(row=0, column=1, padx=5)
+
+    # Add local path entry, hidden initially
+    lp_var = tk.StringVar()
+    lp_label = tk.Label(root, text="Local Path")
+    lp_entry = tk.Entry(root, textvariable=lp_var, width=40)
+
+    def on_source_var_change(*_):
+        if source_var.get() == "copy":
+            lp_label.grid(row=rds_row_start + 4, column=0, sticky="e", padx=5, pady=5)
+            lp_entry.grid(row=rds_row_start + 4, column=1, padx=5, pady=5)
+        else:
+            lp_label.grid_remove()
+            lp_entry.grid_remove()
+
+    source_var.trace_add("write", on_source_var_change)
+    on_source_var_change()  # init state
+
     log_text = tk.Text(root, width=80, height=15)
-    log_text.grid(row=rds_row_start + 3, column=0, columnspan=2, padx=5, pady=5)
+    log_text.grid(row=rds_row_start + 5, column=0, columnspan=2, padx=5, pady=5)
 
     # Progress bar below log text
     progress_bar = ttk.Progressbar(root, orient='horizontal', length=400, mode='determinate')
-    progress_bar.grid(row=rds_row_start + 4, column=0, columnspan=2, padx=5, pady=5)
+    progress_bar.grid(row=rds_row_start + 6, column=0, columnspan=2, padx=5, pady=5)
 
     def log_callback(msg):
         log_text.insert(tk.END, msg)
@@ -157,6 +182,9 @@ def launch_gui():
         gui_args.db_username = entries["db_username"].get().strip()
         gui_args.db_password = entries["db_password"].get()
 
+        gui_args.source_method = source_var.get()
+        gui_args.local_path = lp_entry.get().strip()
+
         try:
             deploy(gui_args, log_callback, progress_callback)
         except SystemExit as e:
@@ -170,9 +198,9 @@ def launch_gui():
         )
 
     btn_deploy = ttk.Button(root, text="Deploy", command=on_deploy)
-    btn_deploy.grid(row=rds_row_start + 5, column=0, pady=10, sticky="e")
+    btn_deploy.grid(row=rds_row_start + 7, column=0, pady=10, sticky="e")
 
     btn_signout = ttk.Button(root, text="Sign Out", command=on_sign_out)
-    btn_signout.grid(row=rds_row_start + 5, column=1, pady=10, sticky="w")
+    btn_signout.grid(row=rds_row_start + 7, column=1, pady=10, sticky="w")
 
     root.mainloop()

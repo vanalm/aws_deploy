@@ -35,7 +35,6 @@ def launch_gui():
         "domain": "mydomain.com",
         "repo_url": "https://github.com/youruser/yourrepo.git",
         "subnet_type": "public",
-        "enable_rds": "no",
         "db_identifier": "myDB",
         "db_username": "admin",
         "db_password": "MyDbPassword123",
@@ -48,7 +47,6 @@ def launch_gui():
         "domain": "Domain Name",
         "repo_url": "Git Repo URL",
         "subnet_type": "Subnet Type (public/nat)",
-        "enable_rds": "Enable RDS (yes/no)",
         "db_identifier": "RDS DB Identifier",
         "db_username": "RDS Username",
         "db_password": "RDS Password",
@@ -66,9 +64,26 @@ def launch_gui():
         entries[field] = var
         row += 1
 
-    # RDS fields at bottom; we hide them initially if enable_rds="no"
+    # Components checkbuttons
+    component_frame = tk.LabelFrame(root, text="Components to enable")
+    component_frame.grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
+    component_vars = {}
+    comps = [
+        ("Build Python from source", "python_source"),
+        ("Configure Apache proxy",    "apache"),
+        ("Run Supervisor for app",     "supervisor"),
+        ("Obtain SSL via Certbot",     "certbot"),
+        ("Enable RDS",                 "enable_rds"),
+    ]
+    for idx, (label_text, key) in enumerate(comps):
+        var = tk.BooleanVar(value=False)
+        cb = tk.Checkbutton(component_frame, text=label_text, variable=var)
+        cb.grid(row=0, column=idx, padx=5, pady=5)
+        component_vars[key] = var
+
+    # RDS fields at bottom; we hide them initially if enable_rds is not checked
     def on_enable_rds_change(*_):
-        if entries["enable_rds"].get().lower() == "yes":
+        if component_vars["enable_rds"].get():
             db_id_label.grid()
             db_id_entry.grid()
             db_user_label.grid()
@@ -83,34 +98,46 @@ def launch_gui():
             db_pass_label.grid_remove()
             db_pass_entry.grid_remove()
 
-    entries["enable_rds"].trace_add("write", on_enable_rds_change)
+    # Attach trace to enable_rds BooleanVar
+    component_vars["enable_rds"].trace_add("write", on_enable_rds_change)
 
+    # Place RDS fields starting at row after entries
+    rds_row_start = row
     db_id_label = tk.Label(root, text="RDS DB Identifier")
-    db_id_label.grid(row=7, column=0, sticky="e", padx=5, pady=5)
+    db_id_label.grid(row=rds_row_start, column=0, sticky="e", padx=5, pady=5)
     db_id_entry = tk.Entry(root, textvariable=entries["db_identifier"], width=40)
-    db_id_entry.grid(row=7, column=1, padx=5, pady=5)
+    db_id_entry.grid(row=rds_row_start, column=1, padx=5, pady=5)
 
     db_user_label = tk.Label(root, text="RDS Username")
-    db_user_label.grid(row=8, column=0, sticky="e", padx=5, pady=5)
+    db_user_label.grid(row=rds_row_start + 1, column=0, sticky="e", padx=5, pady=5)
     db_user_entry = tk.Entry(root, textvariable=entries["db_username"], width=40)
-    db_user_entry.grid(row=8, column=1, padx=5, pady=5)
+    db_user_entry.grid(row=rds_row_start + 1, column=1, padx=5, pady=5)
 
     db_pass_label = tk.Label(root, text="RDS Password")
-    db_pass_label.grid(row=9, column=0, sticky="e", padx=5, pady=5)
+    db_pass_label.grid(row=rds_row_start + 2, column=0, sticky="e", padx=5, pady=5)
     db_pass_entry = tk.Entry(
         root, textvariable=entries["db_password"], width=40, show="*"
     )
-    db_pass_entry.grid(row=9, column=1, padx=5, pady=5)
+    db_pass_entry.grid(row=rds_row_start + 2, column=1, padx=5, pady=5)
 
     on_enable_rds_change()  # init state
 
     log_text = tk.Text(root, width=80, height=15)
-    log_text.grid(row=10, column=0, columnspan=2, padx=5, pady=5)
+    log_text.grid(row=rds_row_start + 3, column=0, columnspan=2, padx=5, pady=5)
+
+    # Progress bar below log text
+    progress_bar = ttk.Progressbar(root, orient='horizontal', length=400, mode='determinate')
+    progress_bar.grid(row=rds_row_start + 4, column=0, columnspan=2, padx=5, pady=5)
 
     def log_callback(msg):
         log_text.insert(tk.END, msg)
         log_text.see(tk.END)
         root.update()
+
+    def progress_callback(current, total):
+        progress_bar['maximum'] = total
+        progress_bar['value'] = current
+        root.update_idletasks()
 
     def on_deploy():
         if not creds_ok:
@@ -124,13 +151,14 @@ def launch_gui():
         gui_args.domain = entries["domain"].get().strip()
         gui_args.repo_url = entries["repo_url"].get().strip()
         gui_args.subnet_type = entries["subnet_type"].get().strip()
-        gui_args.enable_rds = entries["enable_rds"].get().strip()
+        gui_args.components = [k for k, v in component_vars.items() if v.get()]
+
         gui_args.db_identifier = entries["db_identifier"].get().strip()
         gui_args.db_username = entries["db_username"].get().strip()
         gui_args.db_password = entries["db_password"].get()
 
         try:
-            deploy(gui_args, log_callback)
+            deploy(gui_args, log_callback, progress_callback)
         except SystemExit as e:
             log_callback(f"[ERROR] {e}\n")
 
@@ -142,9 +170,9 @@ def launch_gui():
         )
 
     btn_deploy = ttk.Button(root, text="Deploy", command=on_deploy)
-    btn_deploy.grid(row=11, column=0, pady=10, sticky="e")
+    btn_deploy.grid(row=rds_row_start + 5, column=0, pady=10, sticky="e")
 
     btn_signout = ttk.Button(root, text="Sign Out", command=on_sign_out)
-    btn_signout.grid(row=11, column=1, pady=10, sticky="w")
+    btn_signout.grid(row=rds_row_start + 5, column=1, pady=10, sticky="w")
 
     root.mainloop()

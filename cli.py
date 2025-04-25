@@ -1,5 +1,3 @@
-# cli.py
-
 import argparse
 import sys
 from .aws_cli_utils import check_aws_cli_credentials

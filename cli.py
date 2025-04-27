@@ -35,8 +35,30 @@ def parse_args():
     parser.add_argument(
         "--no-gui", action="store_true", help="Run CLI-only (skip tkinter GUI)"
     )
-    parser.add_argument("--source-method", default="git", choices=["git","copy"], help="git clone or scp copy")
-    parser.add_argument("--local-path", default=None, help="Local directory path to copy when using copy method")
+    parser.add_argument(
+        "--source-method",
+        default="git",
+        choices=["git", "copy"],
+        help="git clone or scp copy",
+    )
+    parser.add_argument(
+        "--local-path",
+        default=None,
+        help="Local directory path to copy when using copy method",
+    )
+
+    # NEW: Optional arguments to skip building Python or running certbot
+    parser.add_argument(
+        "--skip-compile",
+        action="store_true",
+        help="Skip compiling Python from source after instance is launched.",
+    )
+    parser.add_argument(
+        "--skip-certbot",
+        action="store_true",
+        help="Skip running certbot commands after instance is launched.",
+    )
+
     return parser.parse_args()
 
 
@@ -88,4 +110,5 @@ def main():
         args.db_username = default_val(args.db_username, "admin")
         args.db_password = default_val(args.db_password, "MyDbPassword123")
 
+        # Pass everything to deploy
         deploy(args, cli_log)

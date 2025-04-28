@@ -253,8 +253,21 @@ python3.12 -m venv /home/ec2-user/venv
 yum install -y httpd mod_ssl certbot python3-certbot-apache
 systemctl enable httpd
 systemctl start httpd
-certbot --apache --non-interactive --agree-tos -d {domain} -m admin@{domain} || true
+
+# Step 2: Configure a VirtualHost on port 80 for {domain}
+mkdir -p /etc/httpd/conf.d
+cat <<EOF >/etc/httpd/conf.d/{domain}.conf
+<VirtualHost *:80>
+    ServerName {domain}
+    DocumentRoot /var/www/html
+</VirtualHost>
+EOF
+
+systemctl restart httpd
+
 """)
+# # Step 3: Re-run certbot (now that port 80 is serving)
+# certbot --apache --non-interactive --agree-tos -d {domain} -m admin@{domain} || true
 
         # If using git:
         if source_method == "git" and repo_url:

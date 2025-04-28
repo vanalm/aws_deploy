@@ -19,7 +19,7 @@ def launch_gui():
     acct_label.grid(row=0, column=0, columnspan=2, padx=5, pady=5)
 
     if creds_ok:
-        acct_label.config(text=f"Signed in as account {result_str}", fg="blue")
+        acct_label.config(text=f"Signed in as account {result_str}")
     else:
         acct_label.config(text=result_str.strip(), fg="red")
 

@@ -14,14 +14,14 @@ from .ec2 import (
     create_security_group_if_needed,
     allocate_elastic_ip,
     associate_elastic_ip,
-    launch_ec2_instance,  # <-- confirm its signature in ec2.py
+    launch_ec2_instance,  # confirm its signature in ec2.py
 )
 from .rds import create_rds_postgres
 from .userdata import create_userdata_script  # kept here if needed for other flows
 
 
 def log(msg: str):
-    """Simple logger function."""
+    """Simple logger function to send all output to the terminal."""
     print(msg, end="", flush=True)
 
 
@@ -37,7 +37,7 @@ runcmd:
 """
 
 
-def deploy(args, log, progress_callback=None):
+def deploy(args, log=log, progress_callback=None):
     """
     Deployment flow:
       1) Check AWS creds
@@ -51,22 +51,17 @@ def deploy(args, log, progress_callback=None):
       9) Wait for instance to be fully 'running' and pass checks
       10) Associate EIP
       11) Create ~/.ssh/config entry
-      12) (If local copy) scp local files
+      12) (If local copy) rsync local files (excluding venv, __pycache__)
       13) SSH into instance to compile Python, install certbot, clone code, etc.
       14) Optional RDS
       15) Done
-
-    `progress_callback(current_step, total_steps)` can be used by a GUI to show progress.
     """
+
     # 1) Check AWS credentials
     creds_ok, acct = check_aws_cli_credentials(log)
     if not creds_ok:
         log(f"[ERROR] AWS credentials invalid: {acct}\n")
-        if progress_callback:
-            # Return gracefully if being invoked by a GUI
-            return
-        else:
-            sys.exit(1)
+        sys.exit(1)
     log(f"[INFO] AWS account: {acct}\n")
 
     steps = [
@@ -81,15 +76,15 @@ def deploy(args, log, progress_callback=None):
         "Wait for instance checks",
         "Associate EIP",
         "Create local SSH config",
-        "Optional SCP local files",
-        "SSH install steps",
+        "Optional rsync local files",
+        "SSH install steps (prompt user yes/no)",
         "Optional RDS",
         "Finish",
     ]
     total = len(steps)
     current = 0
 
-    # If the GUI gives us a progress_callback, we use it; else we use a TQDM progress bar in CLI mode
+    # If a callback is not provided, use a TQDM progress bar
     if progress_callback:
         progress_callback(current, total)
     else:
@@ -107,11 +102,16 @@ def deploy(args, log, progress_callback=None):
     ec2_name = args.ec2_name
     key_name = args.key_name
     domain = args.domain
-    repo_url = args.repo_url
+    repo_url = getattr(args, "repo_url", None)
     region = os.getenv("AWS_REGION", "us-west-2")  # fallback if not provided
     source_method = getattr(args, "source_method", "git")
     local_path = getattr(args, "local_path", None)
-    enable_rds = (getattr(args, "enable_rds", "no").lower() == "yes")
+    # If "enable_rds" was toggled in the GUI, user sets "db_identifier", etc.
+    enable_rds = (
+        getattr(args, "db_identifier", None)
+        and getattr(args, "db_username", None)
+        and getattr(args, "db_password", None)
+    )
 
     # STEP 1 complete: creds checked
     step_complete()
@@ -147,14 +147,10 @@ def deploy(args, log, progress_callback=None):
 
     # 8) Launch EC2 with minimal user-data
     minimal_user_data = create_minimal_userdata_script()
-    # We'll write that text to a temporary file, since many AWS calls want a file path
     with NamedTemporaryFile(delete=False, mode="w", suffix=".txt") as tmpfile:
         tmpfile.write(minimal_user_data)
         user_data_file = tmpfile.name
 
-    # Make sure you match the actual signature for launch_ec2_instance in your ec2.py.
-    # For example, if it expects (ec2_name, key_name, sg_id, subnet_id, region, user_data_file)
-    # plus maybe a final 'log' argument. If it does NOT accept a 'log' keyword, pass it positionally or remove it:
     instance_id, public_dns = launch_ec2_instance(
         ec2_name,
         key_name,
@@ -162,7 +158,7 @@ def deploy(args, log, progress_callback=None):
         subnet_id,
         region,
         user_data_file,
-        log  # remove if your function doesn't accept it
+        log
     )
     step_complete()
 
@@ -181,12 +177,12 @@ def deploy(args, log, progress_callback=None):
     log(f"[INFO] Elastic IP {eip} associated with instance {instance_id}.\n")
     step_complete()
 
-    # 11) Create a local ~/.ssh/config entry for convenience
+    # 11) Create a local ~/.ssh/config entry
     ssh_config_path = os.path.expanduser("~/.ssh/config")
     config_lines = [
         f"\n# Auto-added by deploy script for {ec2_name}",
         f"Host {ec2_name}",
-        f"  HostName {eip}",
+        f"  HostName ec2-{eip.replace('.', '-')}.{region}.compute.amazonaws.com",
         "  User ec2-user",
         f"  IdentityFile ~/.ssh/{key_name}.pem",
     ]
@@ -198,31 +194,47 @@ def deploy(args, log, progress_callback=None):
         log(f"[WARNING] Could not write SSH config: {ex}\n")
     step_complete()
 
-    # 12) If using local copy, scp local files
+    # 12) If using local copy, rsync local files (excluding venv and __pycache__)
     if source_method == "copy":
         if not local_path:
             log("[ERROR] local_path not provided for copy method.\n")
-            if progress_callback:
-                return
-            else:
-                sys.exit(1)
-        # copy_cmd = f"scp -r {shlex.quote(local_path)} {ec2_name}:/home/ec2-user/"
-        copy_cmd = f"scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -r {local_path} {ec2_name}:/home/ec2-user/"
+            sys.exit(1)
+
+        log("[WARNING] Using rsync instead of scp. Excluding 'venv' and '__pycache__' directories.\n")
+
+        copy_cmd = f"""rsync -av \
+  --exclude='venv' \
+  --exclude='__pycache__' \
+  -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
+  {shlex.quote(local_path)} \
+  {ec2_name}:/home/ec2-user/
+"""
         run_cmd(copy_cmd, log)
-        log(f"[INFO] Copied local path {local_path} to /home/ec2-user/.\n")
+        log(f"[INFO] Copied local path {local_path} to /home/ec2-user/ (excluding venv & __pycache__).\n")
     else:
         log("[INFO] Skipping local copy step (source_method != copy).\n")
     step_complete()
 
-    # 13) SSH-based install steps (compile Python, install certbot, clone from git, etc.)
-    skip_compile = getattr(args, "skip_compile", False)
-    skip_certbot = getattr(args, "skip_certbot", False)
+    # 13) Prompt user before doing SSH-based install steps
+    log("\n===== Step 13: SSH-based install steps =====\n")
+    answer = input(
+        "Type 'yes' to continue automatically installing Python, certbot, etc. "
+        "Type 'no' to skip this step and do it manually.\n"
+    ).strip().lower()
 
-    install_script = []
+    if answer == "no":
+        log("[INFO] Skipping automatic SSH steps. Please perform them manually.\n")
+        step_complete()
+    else:
+        # Proceed with automatic SSH steps
+        skip_compile = not ("python_source" in getattr(args, "components", []))
+        skip_certbot = not ("certbot" in getattr(args, "components", []))
+        # Build script
+        install_script = []
 
-    # Optionally compile Python from source
-    if not skip_compile:
-        install_script.append("""\
+        # Optionally compile Python
+        if not skip_compile:
+            install_script.append("""\
 cd /tmp
 curl -LO https://www.python.org/ftp/python/3.12.8/Python-3.12.8.tgz
 tar xzf Python-3.12.8.tgz
@@ -235,63 +247,51 @@ python3.12 -m venv /home/ec2-user/venv
 /home/ec2-user/venv/bin/pip install --upgrade pip
 """)
 
-    # Optionally install certbot, run Apache
-    if not skip_certbot:
-        install_script.append(f"""\
+        # Optionally install certbot + apache
+        if not skip_certbot:
+            install_script.append(f"""\
 yum install -y httpd mod_ssl certbot python3-certbot-apache
 systemctl enable httpd
 systemctl start httpd
 certbot --apache --non-interactive --agree-tos -d {domain} -m admin@{domain} || true
 """)
 
-    # If user selected git
-    if source_method == "git":
-        install_script.append(f"""\
+        # If using git:
+        if source_method == "git" and repo_url:
+            install_script.append(f"""\
 mkdir -p /home/ec2-user/app
 cd /home/ec2-user/app
 git init
 git remote add origin {repo_url}
 git pull origin main
 chown -R ec2-user:ec2-user /home/ec2-user/app
-# If we built Python 3.12 above, we have a venv:
 if [ -f /home/ec2-user/venv/bin/pip ]; then
   /home/ec2-user/venv/bin/pip install fastapi gradio uvicorn supervisor
 fi
 """)
 
-    # Combine the script
-    final_install_script = "\n".join(install_script).strip()
+        final_install_script = "\n".join(install_script).strip()
+        if final_install_script:
+            script_filename = "post_launch_setup.sh"
+            with open(script_filename, "w") as f:
+                f.write(final_install_script + "\n")
 
-    if final_install_script:
-        # Write to a local file, then scp it and run it
-        script_filename = "post_launch_setup.sh"
-        with open(script_filename, "w") as f:
-            f.write(final_install_script + "\n")
+            scp_script_cmd = f"scp {script_filename} {ec2_name}:/home/ec2-user/"
+            run_cmd(scp_script_cmd, log)
 
-        scp_script_cmd = f"scp {script_filename} {ec2_name}:/home/ec2-user/"
-        run_cmd(scp_script_cmd, log)
+            ssh_cmd = f"ssh {ec2_name} 'sudo bash /home/ec2-user/{script_filename}'"
+            run_cmd(ssh_cmd, log)
+            log("[INFO] Finished post-launch install steps.\n")
+        else:
+            log("[INFO] No SSH steps needed (all were disabled or empty).\n")
 
-        ssh_cmd = f"ssh {ec2_name} 'sudo bash /home/ec2-user/{script_filename}'"
-        run_cmd(ssh_cmd, log)
-        log("[INFO] Finished post-launch install steps.\n")
-    else:
-        log("[INFO] Skipping SSH install steps (both compile and certbot were skipped, or no code to clone).\n")
-
-    step_complete()
+        step_complete()
 
     # 14) Optional RDS
     if enable_rds:
-        db_id = getattr(args, "db_identifier", f"{ec2_name}-db")
-        db_user = getattr(args, "db_username", "admin")
-        db_pass = getattr(args, "db_password", None)
-
-        if db_pass is None:
-            log("[ERROR] DB password not provided for RDS.\n")
-            if progress_callback:
-                return
-            else:
-                sys.exit(1)
-
+        db_id = args.db_identifier
+        db_user = args.db_username
+        db_pass = args.db_password
         endpoint = create_rds_postgres(db_id, db_user, db_pass, region, log)
         log(f"[INFO] RDS endpoint: {endpoint}\n")
 
@@ -304,7 +304,3 @@ fi
     log("\n[INFO] Deployment complete!\n")
     log(f"[INFO] SSH example: ssh {ec2_name}\n")
     log(f"[INFO] Domain: {domain} => {eip}\n")
-    if not skip_certbot:
-        log("[INFO] Certbot was run to obtain SSL cert (assuming DNS was in place).\n")
-    else:
-        log("[INFO] Certbot was skipped.\n")

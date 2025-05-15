@@ -328,22 +328,22 @@ fi
     log(f"[INFO] Domain: {domain} => {eip}\n")
 
 
-manual_python_install = """\
-# 1) core build toolchain (safe to repeat)
-sudo dnf -y groupinstall "Development Tools"
+import textwrap
 
-# 2) headers / libs Python needs  (NO 'curl' here)
-sudo dnf -y install \
-  openssl-devel bzip2-devel libffi-devel \
-  zlib-devel xz-devel gdbm-devel sqlite-devel tk-devel \
-  readline-devel
+# One multi-line shell script kept in a single Python string
+PYTHON_INSTALL_CMDS = textwrap.dedent(
+    """
+    # 1) make sure metadata is fresh (quick, no full upgrade)
+    sudo dnf -y makecache
 
-# 3) download & build Python 3.12.8
-cd /tmp
-curl -LO https://www.python.org/ftp/python/3.12.8/Python-3.12.8.tgz   # curl-minimal works
-tar xzf Python-3.12.8.tgz && cd Python-3.12.8
-./configure --enable-optimizations
-make -j"$(nproc)"
-sudo make altinstall       # installs as /usr/local/bin/python3.12
-python3.12 --version
-"""
+    # 2) install Python 3.12 and dev headers from the AL2023 repos
+    sudo dnf -y install python3.12 python3.12-devel
+
+    # 3) create a project-level virtual-env in your home dir
+    python3.12 -m venv ~/venv312
+
+    # 4) activate and bootstrap pip/wheel/setuptools
+    source ~/venv312/bin/activate
+    python -m pip install --upgrade pip wheel setuptools
+    """
+).strip()

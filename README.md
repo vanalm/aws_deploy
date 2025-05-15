@@ -10,6 +10,10 @@ A Python-based, modular toolkit for provisioning AWS infrastructure and deployin
 - Tkinter GUI and CLI interfaces
 
 ---
+## TODO
+[] install dependencies
+[] monitor cpu usage from cli, show widget of cpu status from cli 
+[] deploy app based on template structure
 
 ## Table of Contents
 1. [Features](#features)

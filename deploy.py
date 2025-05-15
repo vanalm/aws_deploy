@@ -1,21 +1,21 @@
 import os
-import sys
-import subprocess
 import shlex
-from time import sleep
+import subprocess
+import sys
 from tempfile import NamedTemporaryFile
+from time import sleep
 
 from tqdm import tqdm
 
 from .aws_cli_utils import check_aws_cli_credentials, run_cmd
-from .networking import create_vpc_if_needed, create_subnet_and_route
+from .ec2 import launch_ec2_instance  # confirm its signature in ec2.py
 from .ec2 import (
-    create_key_pair_if_needed,
-    create_security_group_if_needed,
     allocate_elastic_ip,
     associate_elastic_ip,
-    launch_ec2_instance,  # confirm its signature in ec2.py
+    create_key_pair_if_needed,
+    create_security_group_if_needed,
 )
+from .networking import create_subnet_and_route, create_vpc_if_needed
 from .rds import create_rds_postgres
 
 
@@ -151,18 +151,14 @@ def deploy(args, log=log, progress_callback=None):
         user_data_file = tmpfile.name
 
     instance_id, public_dns = launch_ec2_instance(
-        ec2_name,
-        key_name,
-        sg_id,
-        subnet_id,
-        region,
-        user_data_file,
-        log
+        ec2_name, key_name, sg_id, subnet_id, region, user_data_file, log
     )
     step_complete()
 
     # 9) Wait for instance to be fully up + pass status checks
-    wait_cmd = f"aws ec2 wait instance-running --region {region} --instance-ids {instance_id}"
+    wait_cmd = (
+        f"aws ec2 wait instance-running --region {region} --instance-ids {instance_id}"
+    )
     run_cmd(wait_cmd, log)
     log(f"[INFO] Instance {instance_id} is in 'running' state.\n")
 
@@ -199,7 +195,9 @@ def deploy(args, log=log, progress_callback=None):
             log("[ERROR] local_path not provided for copy method.\n")
             sys.exit(1)
 
-        log("[WARNING] Using rsync instead of scp. Excluding 'venv' and '__pycache__' directories.\n")
+        log(
+            "[WARNING] Using rsync instead of scp. Excluding 'venv' and '__pycache__' directories.\n"
+        )
 
         copy_cmd = f"""rsync -av \
   --exclude='venv' \
@@ -209,17 +207,23 @@ def deploy(args, log=log, progress_callback=None):
   {ec2_name}:/home/ec2-user/
 """
         run_cmd(copy_cmd, log)
-        log(f"[INFO] Copied local path {local_path} to /home/ec2-user/ (excluding venv & __pycache__).\n")
+        log(
+            f"[INFO] Copied local path {local_path} to /home/ec2-user/ (excluding venv & __pycache__).\n"
+        )
     else:
         log("[INFO] Skipping local copy step (source_method != copy).\n")
     step_complete()
 
     # 13) Prompt user before doing SSH-based install steps
     log("\n===== Step 13: SSH-based install steps =====\n")
-    answer = input(
-        "Type 'yes' to continue automatically installing Python, certbot, etc. "
-        "Type 'no' to skip this step and do it manually.\n"
-    ).strip().lower()
+    answer = (
+        input(
+            "Type 'yes' to continue automatically installing Python, certbot, etc. "
+            "Type 'no' to skip this step and do it manually.\n"
+        )
+        .strip()
+        .lower()
+    )
 
     if answer == "no":
         log("[INFO] Skipping automatic SSH steps. Please perform them manually.\n")
@@ -233,7 +237,8 @@ def deploy(args, log=log, progress_callback=None):
 
         # Optionally compile Python
         if not skip_compile:
-            install_script.append("""\
+            install_script.append(
+                """\
 cd /tmp
 curl -LO https://www.python.org/ftp/python/3.12.8/Python-3.12.8.tgz
 tar xzf Python-3.12.8.tgz
@@ -244,11 +249,13 @@ make altinstall
 python3.12 --version
 python3.12 -m venv /home/ec2-user/venv
 /home/ec2-user/venv/bin/pip install --upgrade pip
-""")
+"""
+            )
 
         # Optionally install certbot + apache
         if not skip_certbot:
-            install_script.append(f"""\
+            install_script.append(
+                f"""\
 yum install -y httpd mod_ssl certbot python3-certbot-apache
 systemctl enable httpd
 systemctl start httpd
@@ -264,13 +271,15 @@ EOF
 
 systemctl restart httpd
 
-""")
-# # Step 3: Re-run certbot (now that port 80 is serving)
-# certbot --apache --non-interactive --agree-tos -d {domain} -m admin@{domain} || true
+"""
+            )
+        # # Step 3: Re-run certbot (now that port 80 is serving)
+        # certbot --apache --non-interactive --agree-tos -d {domain} -m admin@{domain} || true
 
         # If using git:
         if source_method == "git" and repo_url:
-            install_script.append(f"""\
+            install_script.append(
+                f"""\
 mkdir -p /home/ec2-user/app
 cd /home/ec2-user/app
 git init
@@ -280,7 +289,8 @@ chown -R ec2-user:ec2-user /home/ec2-user/app
 if [ -f /home/ec2-user/venv/bin/pip ]; then
   /home/ec2-user/venv/bin/pip install fastapi gradio uvicorn supervisor
 fi
-""")
+"""
+            )
 
         final_install_script = "\n".join(install_script).strip()
         if final_install_script:
@@ -316,3 +326,24 @@ fi
     log("\n[INFO] Deployment complete!\n")
     log(f"[INFO] SSH example: ssh {ec2_name}\n")
     log(f"[INFO] Domain: {domain} => {eip}\n")
+
+
+manual_python_install = """\
+# 1) core build toolchain (safe to repeat)
+sudo dnf -y groupinstall "Development Tools"
+
+# 2) headers / libs Python needs  (NO 'curl' here)
+sudo dnf -y install \
+  openssl-devel bzip2-devel libffi-devel \
+  zlib-devel xz-devel gdbm-devel sqlite-devel tk-devel \
+  readline-devel
+
+# 3) download & build Python 3.12.8
+cd /tmp
+curl -LO https://www.python.org/ftp/python/3.12.8/Python-3.12.8.tgz   # curl-minimal works
+tar xzf Python-3.12.8.tgz && cd Python-3.12.8
+./configure --enable-optimizations
+make -j"$(nproc)"
+sudo make altinstall       # installs as /usr/local/bin/python3.12
+python3.12 --version
+"""

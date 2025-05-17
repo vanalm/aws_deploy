@@ -14,6 +14,7 @@ A Python-based, modular toolkit for provisioning AWS infrastructure and deployin
 [] install dependencies
 [] monitor cpu usage from cli, show widget of cpu status from cli 
 [] deploy app based on template structure
+[] app template development (run gradio_app.py on 0.0.0.0:8000)
 
 ## Table of Contents
 1. [Features](#features)

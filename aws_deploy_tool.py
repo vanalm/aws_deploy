@@ -13,13 +13,13 @@ Now includes:
 Default Region: us-west-2
 """
 
-import subprocess
 import argparse
-import sys
-import shlex
-import os
-import shutil
 import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
 
 # For the optional GUI
 import tkinter as tk
@@ -527,15 +527,9 @@ runcmd:
   - yum install -y certbot python3-certbot-apache
   - yum install -y awscli tar make
 
-  # Build Python 3.12.8 from source
-  - cd /tmp
-  - curl -LO https://www.python.org/ftp/python/3.12.8/Python-3.12.8.tgz
-  - tar xzf Python-3.12.8.tgz
-  - cd Python-3.12.8
-  - ./configure --enable-optimizations
-  - make -j 2
-  - make altinstall
-  - python3.12 --version
+  # Install Python 3.12 from distribution RPMs
+  - dnf -y makecache
+  - dnf -y install python3.12 python3.12-devel
 
   # Create a venv
   - python3.12 -m venv /home/ec2-user/venv
@@ -563,6 +557,9 @@ runcmd:
   # Attempt to get SSL cert
   - certbot --apache --non-interactive --agree-tos -d {domain} -m admin@{domain} || true
 
+  # Disable default Apache welcome page
+  - mv /etc/httpd/conf.d/welcome.conf /etc/httpd/conf.d/welcome.conf.disabled || true
+
   # Apache config for domain + reverse proxy
   - echo "<VirtualHost *:80>
     ServerName {domain}
@@ -578,8 +575,14 @@ runcmd:
 
     ProxyPreserveHost On
     ProxyRequests Off
-    ProxyPass / http://127.0.0.1:8000/
-    ProxyPassReverse / http://127.0.0.1:8000/
+
+    # API → backend (private 8080)
+    ProxyPass        /api/  http://127.0.0.1:8080/
+    ProxyPassReverse /api/  http://127.0.0.1:8080/
+
+    # UI  → frontend (public 8000)
+    ProxyPass        /      http://127.0.0.1:8000/
+    ProxyPassReverse /      http://127.0.0.1:8000/
   </VirtualHost>
   " > /etc/httpd/conf.d/deploy.conf
 
@@ -590,13 +593,21 @@ runcmd:
   - echo "[supervisord]
 nodaemon=true
 
-[program:myapp]
+[program:frontend]
 command=/home/ec2-user/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
 directory=/home/ec2-user/app
 autostart=true
 autorestart=true
-stderr_logfile=/var/log/myapp_err.log
-stdout_logfile=/var/log/myapp_out.log
+stderr_logfile=/var/log/frontend_err.log
+stdout_logfile=/var/log/frontend_out.log
+
+[program:backend]
+command=/home/ec2-user/venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8080
+directory=/home/ec2-user/app
+autostart=true
+autorestart=true
+stderr_logfile=/var/log/backend_err.log
+stdout_logfile=/var/log/backend_out.log
 " > /etc/supervisord.d/myapp.ini
 
   - /home/ec2-user/venv/bin/pip install supervisor
@@ -870,7 +881,7 @@ def launch_gui():
             db_pass_label.grid_remove()
             db_pass_entry.grid_remove()
 
-    entries["enable_rds"].trace("w", on_enable_rds_change)
+    entries["enable_rds"].trace_add("write", on_enable_rds_change)
 
     # Move references for the DB labels/entries so we can hide them easily:
     db_id_label = tk.Label(root, text="RDS DB Identifier")

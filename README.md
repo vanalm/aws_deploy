@@ -107,9 +107,9 @@ python -m aws_deploy_tool.main \
 
 ### GUI Mode
 
-Simply run without args:
+Simply run without args from ~/code
 ```bash
-python -m aws_deploy_tool.main
+python -m aws_deploy
 ```
 A Tkinter window will appear. Fill in fields and click **Deploy**.
 

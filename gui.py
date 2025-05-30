@@ -1,9 +1,10 @@
-import tkinter as tk
 import argparse
+import tkinter as tk
 
 from .aws_cli_utils import check_aws_cli_credentials, sign_out_aws_credentials
-from .deploy import deploy
 from .constants import DEFAULT_REGION
+from .deploy import deploy
+
 
 def launch_gui():
     """
@@ -38,9 +39,9 @@ def launch_gui():
 
     labels = {
         "aws_region": "AWS Region",
-        "ec2_name":  "EC2 Name",
-        "key_name":  "Key Pair Name",
-        "domain":    "Domain Name",
+        "ec2_name": "EC2 Name",
+        "key_name": "Key Pair Name",
+        "domain": "Domain Name",
     }
 
     entries = {}
@@ -117,8 +118,12 @@ def launch_gui():
     row += 1
 
     source_var = tk.StringVar(value="copy")
-    rb_git = tk.Radiobutton(source_frame, text="Git Clone", variable=source_var, value="git")
-    rb_copy = tk.Radiobutton(source_frame, text="Local Copy", variable=source_var, value="copy")
+    rb_git = tk.Radiobutton(
+        source_frame, text="Git Clone", variable=source_var, value="git"
+    )
+    rb_copy = tk.Radiobutton(
+        source_frame, text="Local Copy", variable=source_var, value="copy"
+    )
     rb_git.grid(row=0, column=0, padx=5, pady=5)
     rb_copy.grid(row=0, column=1, padx=5, pady=5)
 

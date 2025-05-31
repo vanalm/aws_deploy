@@ -1,5 +1,3 @@
-# file: gui.py
-
 import argparse
 import tkinter as tk
 
@@ -10,8 +8,8 @@ from .deploy import deploy
 
 def launch_gui():
     """
-    Minimal tkinter GUI that simply collects input fields and then closes.
-    All logs and prompts happen in the terminal.
+    Minimal tkinter GUI to collect input fields, then runs deploy().
+    All logs/prompts happen in the terminal.
     """
     root = tk.Tk()
     root.title("AWS Deployment Tool")
@@ -29,14 +27,11 @@ def launch_gui():
     # Default values
     defaults = {
         "aws_region": DEFAULT_REGION,
-        "ec2_name": "gps",
-        "key_name": "gps_keypair",
-        "domain": "congruencyassistant.com",
-        "local_path": "/Users/jacobvanalmelo/code/gps",
+        "ec2_name": "my_ec2",
+        "key_name": "my_keypair",
+        "domain": "example.com",
+        "local_path": "/path/to/local/code",
         "repo_url": "https://github.com/youruser/yourrepo.git",
-        "db_identifier": "myDB",
-        "db_username": "admin",
-        "db_password": "MyDbPassword123",
     }
 
     labels = {
@@ -57,64 +52,18 @@ def launch_gui():
         entries[field] = var
         row += 1
 
-    # Checkboxes for optional components
+    # Certbot checkbox
     component_frame = tk.LabelFrame(root, text="Components")
     component_frame.grid(row=row, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
     row += 1
 
-    component_vars = {}
-    comp_defs = [
-        ("Compile Python from source", "python_source"),
-        ("Obtain SSL via Certbot", "certbot"),
-    ]
-    for idx, (label_text, key) in enumerate(comp_defs):
-        var = tk.BooleanVar(value=False)
-        cb = tk.Checkbutton(component_frame, text=label_text, variable=var)
-        cb.grid(row=0, column=idx, padx=5, pady=5)
-        component_vars[key] = var
+    certbot_var = tk.BooleanVar(value=False)
+    cb_certbot = tk.Checkbutton(
+        component_frame, text="Obtain SSL via Certbot", variable=certbot_var
+    )
+    cb_certbot.grid(row=0, column=0, padx=5, pady=5)
 
-    # (Optional) RDS radio
-    rds_frame = tk.LabelFrame(root, text="RDS Option")
-    rds_frame.grid(row=row, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
-    row += 1
-
-    rds_var = tk.StringVar(value="no")
-    r1 = tk.Radiobutton(rds_frame, text="No RDS", variable=rds_var, value="no")
-    r2 = tk.Radiobutton(rds_frame, text="Yes RDS", variable=rds_var, value="yes")
-    r1.grid(row=0, column=0, padx=5, pady=5)
-    r2.grid(row=0, column=1, padx=5, pady=5)
-
-    db_id_var = tk.StringVar(value=defaults["db_identifier"])
-    db_user_var = tk.StringVar(value=defaults["db_username"])
-    db_pass_var = tk.StringVar(value=defaults["db_password"])
-
-    db_id_label = tk.Label(rds_frame, text="RDS DB Identifier")
-    db_id_entry = tk.Entry(rds_frame, textvariable=db_id_var, width=25)
-    db_user_label = tk.Label(rds_frame, text="RDS Username")
-    db_user_entry = tk.Entry(rds_frame, textvariable=db_user_var, width=25)
-    db_pass_label = tk.Label(rds_frame, text="RDS Password")
-    db_pass_entry = tk.Entry(rds_frame, textvariable=db_pass_var, width=25, show="*")
-
-    def on_rds_change(*_):
-        if rds_var.get() == "yes":
-            db_id_label.grid(row=1, column=0, padx=5, pady=2, sticky="e")
-            db_id_entry.grid(row=1, column=1, padx=5, pady=2)
-            db_user_label.grid(row=2, column=0, padx=5, pady=2, sticky="e")
-            db_user_entry.grid(row=2, column=1, padx=5, pady=2)
-            db_pass_label.grid(row=3, column=0, padx=5, pady=2, sticky="e")
-            db_pass_entry.grid(row=3, column=1, padx=5, pady=2)
-        else:
-            db_id_label.grid_remove()
-            db_id_entry.grid_remove()
-            db_user_label.grid_remove()
-            db_user_entry.grid_remove()
-            db_pass_label.grid_remove()
-            db_pass_entry.grid_remove()
-
-    rds_var.trace_add("write", on_rds_change)
-    on_rds_change()
-
-    # Source frame
+    # Source frame: Git or local copy
     source_frame = tk.LabelFrame(root, text="Code Source")
     source_frame.grid(row=row, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
     row += 1
@@ -165,21 +114,10 @@ def launch_gui():
         gui_args.key_name = entries["key_name"].get().strip()
         gui_args.domain = entries["domain"].get().strip()
 
-        # Which components (compile Python, certbot, etc)
+        # Which components (certbot or not)
         gui_args.components = []
-        for key, var in component_vars.items():
-            if var.get():
-                gui_args.components.append(key)
-
-        # RDS
-        if rds_var.get() == "yes":
-            gui_args.db_identifier = db_id_var.get().strip()
-            gui_args.db_username = db_user_var.get().strip()
-            gui_args.db_password = db_pass_var.get()
-        else:
-            gui_args.db_identifier = None
-            gui_args.db_username = None
-            gui_args.db_password = None
+        if certbot_var.get():
+            gui_args.components.append("certbot")
 
         # Source
         gui_args.source_method = source_var.get()

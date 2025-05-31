@@ -1,13 +1,10 @@
-# file: deploy.py
-
 import os
 import shlex
 import subprocess
 import sys
 from tempfile import NamedTemporaryFile
 
-from tqdm import tqdm
-
+# AWS helper imports
 from .aws_cli_utils import check_aws_cli_credentials, run_cmd
 from .ec2 import (
     allocate_elastic_ip,
@@ -17,60 +14,39 @@ from .ec2 import (
     launch_ec2_instance,
 )
 from .networking import create_subnet_and_route, create_vpc_if_needed
-from .rds import create_rds_postgres
+
+# If you previously used tqdm or other imports, remove them if not needed
+# from tqdm import tqdm
 
 
 def log(msg: str):
-    """Simple logger function to send all output to the terminal."""
+    """Simple logger function to send all output to the terminal (stdout)."""
     print(msg, end="", flush=True)
 
 
-def create_userdata_script(
-    domain: str, ec2_name: str, skip_compile: bool, skip_certbot: bool
-) -> str:
+def create_userdata_script(domain: str, ec2_name: str, skip_certbot: bool) -> str:
     """
     Creates a #cloud-config script that:
-      - Optionally compiles Python3.12 from source OR installs from dnf.
-      - Optionally runs Certbot for {domain} or just stays HTTP.
+      - Installs Python3.12 from dnf (no source compile).
+      - Installs Apache, certbot (if not skipped), etc.
       - Clones your repo into /home/ec2-user/{ec2_name}.
-      - Creates a venv in /home/ec2-user/{ec2_name}/venv.
-      - Installs requirements from /home/ec2-user/{ec2_name}/requirements.txt (if present).
-      - Sets up supervisor to run 'frontend' & 'backend' from that venv at ports 8000/8080.
-    No EIP association here—that is done by the local Python script.
+      - Creates a venv and installs any requirements.txt.
+      - Sets up Supervisor to run 'frontend' & 'backend' from that venv at ports 8000/8080.
+      - Optionally configures SSL with certbot if skip_certbot=False.
     """
 
-    # 1) Choose compile or just install python3.12
-    if not skip_compile:
-        # compile from source
-        python_block = r"""
-  - cd /tmp
-  - curl -LO https://www.python.org/ftp/python/3.12.8/Python-3.12.8.tgz
-  - tar xzf Python-3.12.8.tgz
-  - cd Python-3.12.8
-  - ./configure --enable-optimizations
-  - make -j 2
-  - make altinstall
-  - python3.12 --version
-
-  - mkdir -p /home/ec2-user/{EC2_NAME}
-  - cd /home/ec2-user/{EC2_NAME}
-  - python3.12 -m venv venv
-  - venv/bin/pip install --upgrade pip
-  # We'll install requirements.txt later if present
-"""
-    else:
-        # use distro python3.12
-        python_block = r"""
+    # Always install Python 3.12 with dnf
+    python_block = rf"""
   - dnf -y makecache
   - dnf -y install python3.12 python3.12-devel
 
-  - mkdir -p /home/ec2-user/{EC2_NAME}
-  - cd /home/ec2-user/{EC2_NAME}
+  - mkdir -p /home/ec2-user/{ec2_name}
+  - cd /home/ec2-user/{ec2_name}
   - python3.12 -m venv venv
   - venv/bin/pip install --upgrade pip
 """
 
-    # 2) Optionally do certbot or just do HTTP
+    # Optionally do certbot or just do HTTP
     if not skip_certbot:
         cert_block = rf"""
   - yum install -y certbot python3-certbot-apache
@@ -89,7 +65,7 @@ def create_userdata_script(
   - systemctl restart httpd
 """
 
-    # Final user-data, referencing placeholders:
+    # Final user-data
     userdata = rf"""#cloud-config
 package_update: true
 package_upgrade: all
@@ -173,30 +149,64 @@ stdout_logfile=/var/log/backend_out.log
   - echo "=== Setup Complete ==="
 """
 
-    # Insert actual ec2_name into placeholders
+    # Insert the actual ec2_name into placeholders
     userdata = userdata.replace("{EC2_NAME}", ec2_name)
-
     return userdata
 
 
-def deploy(args, log=log, progress_callback=None):
+def post_deploy_checks(ec2_name: str, log_func=log):
     """
-    Deployment flow:
+    After the instance is up, confirm that everything ran successfully.
+    - Copies the cloud-init logs locally.
+    - Checks python3.12, certbot, and supervisor, etc.
+    """
+    log_func("\n[INFO] Starting post-deployment checks...\n")
+
+    # Download cloud-init logs
+    local_log_name = f"cloud-init-output-{ec2_name}.log"
+    scp_cmd = f"scp {ec2_name}:/var/log/cloud-init-output.log {local_log_name}"
+    run_cmd(
+        scp_cmd, log_func, check=False
+    )  # check=False so it doesn't crash if scp fails
+
+    # Check python version
+    run_cmd(f"ssh {ec2_name} 'python3.12 --version'", log_func, check=False)
+
+    # Check certbot
+    run_cmd(
+        f"ssh {ec2_name} 'command -v certbot || echo [WARN] certbot not found'",
+        log_func,
+        check=False,
+    )
+
+    # Check supervisor
+    run_cmd(
+        f"ssh {ec2_name} 'command -v supervisord && supervisorctl status || echo [WARN] supervisor not found'",
+        log_func,
+        check=False,
+    )
+
+    log_func("[INFO] Post-deployment checks complete.\n")
+
+
+def deploy(args, log=log):
+    """
+    Minimal deployment flow:
       1) Confirm AWS creds
       2) Create/reuse VPC
       3) Create subnet & route
       4) Create key pair
       5) Create security group
       6) Allocate EIP
-      7) Ask user to set DNS => EIP
-      8) Launch EC2 with user-data
+      7) Prompt DNS
+      8) Launch EC2 w/ user-data (installs python3.12 via dnf)
       9) Wait for instance
       10) Associate EIP
       11) Write local SSH config
-      12) If local copy, rsync
-      13) Done
+      12) (Optional) rsync local code
+      13) Post-deploy checks (SSH in, retrieve logs, etc)
+      14) Done
     """
-
     # 1) Check creds
     creds_ok, acct = check_aws_cli_credentials(log)
     if not creds_ok:
@@ -209,11 +219,8 @@ def deploy(args, log=log, progress_callback=None):
     domain = args.domain
     region = getattr(args, "aws_region", "us-west-2")
     source_method = getattr(args, "source_method", "git")
-    repo_url = getattr(args, "repo_url", None)
     local_path = getattr(args, "local_path", None)
 
-    # Check components from GUI
-    compile_python_source = "python_source" in getattr(args, "components", [])
     use_certbot = "certbot" in getattr(args, "components", [])
 
     # 2-5) VPC, subnet, key, SG
@@ -230,17 +237,17 @@ def deploy(args, log=log, progress_callback=None):
     log(f"[ACTION] Create/verify A-record: {domain} -> {eip}\n")
     input("[Press ENTER once DNS is updated, or continue anyway]\n")
 
-    # 8) Generate user-data
+    # 8) Generate user-data (always using dnf python3.12, optional certbot)
     user_data = create_userdata_script(
         domain=domain,
         ec2_name=ec2_name,
-        skip_compile=(not compile_python_source),
         skip_certbot=(not use_certbot),
     )
     with NamedTemporaryFile(delete=False, mode="w", suffix=".txt") as tmp:
         tmp.write(user_data)
         user_data_file = tmp.name
 
+    # Launch EC2
     instance_id, public_dns = launch_ec2_instance(
         ec2_name, key_name, sg_id, subnet_id, region, user_data_file, log
     )
@@ -289,6 +296,18 @@ def deploy(args, log=log, progress_callback=None):
         run_cmd(copy_cmd, log)
         log(f"[INFO] Copied local files to /home/ec2-user/{ec2_name}.\n")
 
+    # 13) Post-deployment checks (SSH, logs, etc.)
+    post_deploy_checks(ec2_name, log)
+
+    # 14) Done
     log("\n[INFO] Deployment complete.\n")
     log(f"[INFO] Domain: {domain} => {eip}\n")
     log(f"[INFO] SSH: ssh {ec2_name}\n")
+    # Example commands that run on the remote EC2 via SSH:
+    run_cmd(f"ssh {ec2_name} 'sudo dnf -y install nano'", log)
+    run_cmd(
+        f"ssh {ec2_name} \"echo 'Hello from the new EC2!' > /home/ec2-user/hello_world.txt\"",
+        log,
+    )
+    run_cmd(f"ssh {ec2_name} 'cat /home/ec2-user/hello_world.txt'", log)
+    run_cmd(f"ssh {ec2_name} 'nano --version'", log)

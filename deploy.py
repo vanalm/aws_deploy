@@ -1,19 +1,20 @@
+# file: deploy.py
+
 import os
 import shlex
 import subprocess
 import sys
 from tempfile import NamedTemporaryFile
-from time import sleep
 
 from tqdm import tqdm
 
 from .aws_cli_utils import check_aws_cli_credentials, run_cmd
-from .ec2 import launch_ec2_instance  # confirm its signature in ec2.py
 from .ec2 import (
     allocate_elastic_ip,
     associate_elastic_ip,
     create_key_pair_if_needed,
     create_security_group_if_needed,
+    launch_ec2_instance,
 )
 from .networking import create_subnet_and_route, create_vpc_if_needed
 from .rds import create_rds_postgres
@@ -24,155 +25,243 @@ def log(msg: str):
     print(msg, end="", flush=True)
 
 
-def create_minimal_userdata_script():
+def create_userdata_script(
+    domain: str, ec2_name: str, skip_compile: bool, skip_certbot: bool
+) -> str:
     """
-    Returns a small #cloud-config that only installs essentials.
-    This ensures the instance boots quickly without big compiles.
+    Creates a #cloud-config script that:
+      - Optionally compiles Python3.12 from source OR installs from dnf.
+      - Optionally runs Certbot for {domain} or just stays HTTP.
+      - Clones your repo into /home/ec2-user/{ec2_name}.
+      - Creates a venv in /home/ec2-user/{ec2_name}/venv.
+      - Installs requirements from /home/ec2-user/{ec2_name}/requirements.txt (if present).
+      - Sets up supervisor to run 'frontend' & 'backend' from that venv at ports 8000/8080.
+    No EIP association here—that is done by the local Python script.
     """
-    return """#cloud-config
-runcmd:
-  - yum update -y
-  - yum install -y python3 git
+
+    # 1) Choose compile or just install python3.12
+    if not skip_compile:
+        # compile from source
+        python_block = r"""
+  - cd /tmp
+  - curl -LO https://www.python.org/ftp/python/3.12.8/Python-3.12.8.tgz
+  - tar xzf Python-3.12.8.tgz
+  - cd Python-3.12.8
+  - ./configure --enable-optimizations
+  - make -j 2
+  - make altinstall
+  - python3.12 --version
+
+  - mkdir -p /home/ec2-user/{EC2_NAME}
+  - cd /home/ec2-user/{EC2_NAME}
+  - python3.12 -m venv venv
+  - venv/bin/pip install --upgrade pip
+  # We'll install requirements.txt later if present
 """
+    else:
+        # use distro python3.12
+        python_block = r"""
+  - dnf -y makecache
+  - dnf -y install python3.12 python3.12-devel
+
+  - mkdir -p /home/ec2-user/{EC2_NAME}
+  - cd /home/ec2-user/{EC2_NAME}
+  - python3.12 -m venv venv
+  - venv/bin/pip install --upgrade pip
+"""
+
+    # 2) Optionally do certbot or just do HTTP
+    if not skip_certbot:
+        cert_block = rf"""
+  - yum install -y certbot python3-certbot-apache
+  - certbot --apache --non-interactive --agree-tos \
+      -d {domain} -m admin@{domain} || true
+
+  - sed -i '/<\/VirtualHost>/i \\    ProxyPreserveHost On\\n    ProxyPass /api/ http://127.0.0.1:8080/\\n    ProxyPassReverse /api/ http://127.0.0.1:8080/\\n    ProxyPass / http://127.0.0.1:8000/\\n    ProxyPassReverse / http://127.0.0.1:8000/' \
+      /etc/httpd/conf.d/{domain}-le-ssl.conf || true
+  - systemctl restart httpd
+"""
+    else:
+        cert_block = r"""
+  - echo "[INFO] Skipping Certbot. Only HTTP vHost configured."
+  - sed -i '/<\/VirtualHost>/i \    ProxyPreserveHost On\n    ProxyPass /api/ http://127.0.0.1:8080/\n    ProxyPassReverse /api/ http://127.0.0.1:8080/\n    ProxyPass / http://127.0.0.1:8000/\n    ProxyPassReverse / http://127.0.0.1:8000/' \
+       /etc/httpd/conf.d/001-http.conf
+  - systemctl restart httpd
+"""
+
+    # Final user-data, referencing placeholders:
+    userdata = rf"""#cloud-config
+package_update: true
+package_upgrade: all
+
+runcmd:
+  ########################################################
+  # 1) Basic system prep
+  ########################################################
+  - yum update -y
+  - yum install -y git gcc openssl-devel bzip2-devel libffi-devel zlib-devel
+  - yum install -y httpd mod_ssl
+  - yum install -y awscli tar make
+
+{python_block}
+
+  ########################################################
+  # 2) Minimal HTTP vHost for {domain}
+  ########################################################
+  - mv /etc/httpd/conf.d/welcome.conf /etc/httpd/conf.d/welcome.conf.disabled || true
+  - sed -i '/proxy_module/s/^#//g' /etc/httpd/conf.modules.d/00-proxy.conf
+  - sed -i '/proxy_http_module/s/^#//g' /etc/httpd/conf.modules.d/00-proxy.conf
+
+  - echo "<VirtualHost *:80>
+      ServerName {domain}
+      DocumentRoot /var/www/html
+  </VirtualHost>" > /etc/httpd/conf.d/001-http.conf
+
+  - systemctl enable httpd
+  - systemctl start httpd
+
+  ########################################################
+  # 3) Pull your code into /home/ec2-user/{ec2_name}
+  ########################################################
+  - cd /home/ec2-user/{ec2_name}
+  - git init
+  - git remote add origin https://github.com/youruser/yourrepo.git
+  - git pull origin main
+  - chown -R ec2-user:ec2-user /home/ec2-user/{ec2_name}
+
+  ########################################################
+  # 4) Install from requirements.txt (if any)
+  ########################################################
+  - cd /home/ec2-user/{ec2_name}
+  - if [ -f requirements.txt ]; then venv/bin/pip install -r requirements.txt || true; fi
+
+  ########################################################
+  # 5) Certbot or not
+  ########################################################
+{cert_block}
+
+  ########################################################
+  # 6) Supervisor config to run uvicorn from venv
+  ########################################################
+  - cd /home/ec2-user/{ec2_name}
+  - venv/bin/pip install supervisor
+  - mkdir -p /etc/supervisord.d
+
+  - echo "[supervisord]
+nodaemon=true
+
+[program:frontend]
+command=/home/ec2-user/{ec2_name}/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+directory=/home/ec2-user/{ec2_name}
+autostart=true
+autorestart=true
+stderr_logfile=/var/log/frontend_err.log
+stdout_logfile=/var/log/frontend_out.log
+
+[program:backend]
+command=/home/ec2-user/{ec2_name}/venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8080
+directory=/home/ec2-user/{ec2_name}
+autostart=true
+autorestart=true
+stderr_logfile=/var/log/backend_err.log
+stdout_logfile=/var/log/backend_out.log
+" > /etc/supervisord.d/myapp.ini
+
+  - echo "supervisord -c /etc/supervisord.d/myapp.ini" >> /etc/rc.local
+  - supervisord -c /etc/supervisord.d/myapp.ini
+
+  - echo "=== Setup Complete ==="
+"""
+
+    # Insert actual ec2_name into placeholders
+    userdata = userdata.replace("{EC2_NAME}", ec2_name)
+
+    return userdata
 
 
 def deploy(args, log=log, progress_callback=None):
     """
     Deployment flow:
-      1) Check AWS creds
+      1) Confirm AWS creds
       2) Create/reuse VPC
       3) Create subnet & route
       4) Create key pair
       5) Create security group
       6) Allocate EIP
-      7) Pause for DNS update (if desired)
-      8) Launch EC2 with minimal user-data
-      9) Wait for instance to be fully 'running' and pass checks
+      7) Ask user to set DNS => EIP
+      8) Launch EC2 with user-data
+      9) Wait for instance
       10) Associate EIP
-      11) Create ~/.ssh/config entry
-      12) (If local copy) rsync local files (excluding venv, __pycache__)
-      13) SSH into instance to compile Python, install certbot, clone code, etc.
-      14) Optional RDS
-      15) Done
+      11) Write local SSH config
+      12) If local copy, rsync
+      13) Done
     """
 
-    # 1) Check AWS credentials
+    # 1) Check creds
     creds_ok, acct = check_aws_cli_credentials(log)
     if not creds_ok:
         log(f"[ERROR] AWS credentials invalid: {acct}\n")
         sys.exit(1)
     log(f"[INFO] AWS account: {acct}\n")
 
-    steps = [
-        "Check AWS creds",
-        "Create/reuse VPC",
-        "Create subnet & route",
-        "Create key pair",
-        "Create security group",
-        "Allocate EIP",
-        "Pause for DNS update",
-        "Launch EC2 (minimal user-data)",
-        "Wait for instance checks",
-        "Associate EIP",
-        "Create local SSH config",
-        "Optional rsync local files",
-        "SSH install steps (prompt user yes/no)",
-        "Optional RDS",
-        "Finish",
-    ]
-    total = len(steps)
-    current = 0
-
-    # If a callback is not provided, use a TQDM progress bar
-    if progress_callback:
-        progress_callback(current, total)
-    else:
-        pbar = tqdm(total=total, desc="Deployment", unit="step")
-
-    def step_complete():
-        nonlocal current
-        current += 1
-        if progress_callback:
-            progress_callback(current, total)
-        else:
-            pbar.update(1)
-
-    # Pull out frequently used args
     ec2_name = args.ec2_name
     key_name = args.key_name
     domain = args.domain
-    repo_url = getattr(args, "repo_url", None)
-    region = os.getenv("AWS_REGION", "us-west-2")  # fallback if not provided
+    region = getattr(args, "aws_region", "us-west-2")
     source_method = getattr(args, "source_method", "git")
+    repo_url = getattr(args, "repo_url", None)
     local_path = getattr(args, "local_path", None)
-    # If "enable_rds" was toggled in the GUI, user sets "db_identifier", etc.
-    enable_rds = (
-        getattr(args, "db_identifier", None)
-        and getattr(args, "db_username", None)
-        and getattr(args, "db_password", None)
-    )
 
-    # STEP 1 complete: creds checked
-    step_complete()
+    # Check components from GUI
+    compile_python_source = "python_source" in getattr(args, "components", [])
+    use_certbot = "certbot" in getattr(args, "components", [])
 
-    # 2) Create or reuse VPC
+    # 2-5) VPC, subnet, key, SG
     vpc_id = create_vpc_if_needed(ec2_name, region, log)
-    step_complete()
-
-    # 3) Create subnet & route
     subnet_id = create_subnet_and_route(ec2_name, region, True, vpc_id, log)
-    step_complete()
-
-    # 4) Key pair
     pem_path = create_key_pair_if_needed(key_name, region, log)
-    step_complete()
-
-    # 5) Security group
     sg_id = create_security_group_if_needed(ec2_name, region, vpc_id, log)
-    step_complete()
 
-    # 6) Allocate EIP
+    # 6) EIP
     alloc_id, eip = allocate_elastic_ip(ec2_name, region, log)
-    log(f"[INFO] Elastic IP allocated: {eip}\n")
-    step_complete()
+    log(f"[INFO] EIP allocated: {eip}\n")
 
-    # 7) Pause for DNS update
-    log(
-        f"[ACTION REQUIRED] Please create/verify an A-record in DNS for '{domain}' "
-        f"pointing to IP {eip}.\n"
+    # 7) Prompt user to set DNS
+    log(f"[ACTION] Create/verify A-record: {domain} -> {eip}\n")
+    input("[Press ENTER once DNS is updated, or continue anyway]\n")
+
+    # 8) Generate user-data
+    user_data = create_userdata_script(
+        domain=domain,
+        ec2_name=ec2_name,
+        skip_compile=(not compile_python_source),
+        skip_certbot=(not use_certbot),
     )
-    input("[Press ENTER once DNS is updated or if you want to continue anyway]\n")
-    step_complete()
-
-    # 8) Launch EC2 with minimal user-data
-    minimal_user_data = create_minimal_userdata_script()
-    with NamedTemporaryFile(delete=False, mode="w", suffix=".txt") as tmpfile:
-        tmpfile.write(minimal_user_data)
-        user_data_file = tmpfile.name
+    with NamedTemporaryFile(delete=False, mode="w", suffix=".txt") as tmp:
+        tmp.write(user_data)
+        user_data_file = tmp.name
 
     instance_id, public_dns = launch_ec2_instance(
         ec2_name, key_name, sg_id, subnet_id, region, user_data_file, log
     )
-    step_complete()
+    log(f"[INFO] Launched {instance_id}, DNS {public_dns}\n")
 
-    # 9) Wait for instance to be fully up + pass status checks
-    wait_cmd = (
-        f"aws ec2 wait instance-running --region {region} --instance-ids {instance_id}"
+    # Wait for it
+    run_cmd(
+        f"aws ec2 wait instance-running --region {region} --instance-ids {instance_id}",
+        log,
     )
-    run_cmd(wait_cmd, log)
-    log(f"[INFO] Instance {instance_id} is in 'running' state.\n")
-
-    wait_cmd_ok = f"aws ec2 wait instance-status-ok --region {region} --instance-ids {instance_id}"
-    run_cmd(wait_cmd_ok, log)
+    run_cmd(
+        f"aws ec2 wait instance-status-ok --region {region} --instance-ids {instance_id}",
+        log,
+    )
     log(f"[INFO] Instance {instance_id} passed status checks.\n")
-    step_complete()
 
-    # 10) Associate EIP now that it's running
+    # 10) Associate EIP
     associate_elastic_ip(instance_id, alloc_id, region, log)
-    log(f"[INFO] Elastic IP {eip} associated with instance {instance_id}.\n")
-    step_complete()
+    log(f"[INFO] EIP {eip} associated with {instance_id}.\n")
 
-    # 11) Create a local ~/.ssh/config entry
+    # 11) Write SSH config
     ssh_config_path = os.path.expanduser("~/.ssh/config")
     config_lines = [
         f"\n# Auto-added by deploy script for {ec2_name}",
@@ -184,166 +273,22 @@ def deploy(args, log=log, progress_callback=None):
     try:
         with open(ssh_config_path, "a") as cfg:
             cfg.write("\n".join(config_lines) + "\n")
-        log(f"[INFO] Appended SSH config entry to {ssh_config_path}\n")
+        log(f"[INFO] Appended SSH config to {ssh_config_path}\n")
     except Exception as ex:
         log(f"[WARNING] Could not write SSH config: {ex}\n")
-    step_complete()
 
-    # 12) If using local copy, rsync local files (excluding venv and __pycache__)
-    if source_method == "copy":
-        if not local_path:
-            log("[ERROR] local_path not provided for copy method.\n")
-            sys.exit(1)
-
-        log(
-            "[WARNING] Using rsync instead of scp. Excluding 'venv' and '__pycache__' directories.\n"
-        )
-
+    # 12) Local copy if selected
+    if source_method == "copy" and local_path:
         copy_cmd = f"""rsync -av \
   --exclude='venv' \
   --exclude='__pycache__' \
   -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
   {shlex.quote(local_path)} \
-  {ec2_name}:/home/ec2-user/
+  {ec2_name}:/home/ec2-user/{ec2_name}
 """
         run_cmd(copy_cmd, log)
-        log(
-            f"[INFO] Copied local path {local_path} to /home/ec2-user/ (excluding venv & __pycache__).\n"
-        )
-    else:
-        log("[INFO] Skipping local copy step (source_method != copy).\n")
-    step_complete()
+        log(f"[INFO] Copied local files to /home/ec2-user/{ec2_name}.\n")
 
-    # 13) Prompt user before doing SSH-based install steps
-    log("\n===== Step 13: SSH-based install steps =====\n")
-    answer = (
-        input(
-            "Type 'yes' to continue automatically installing Python, certbot, etc. "
-            "Type 'no' to skip this step and do it manually.\n"
-        )
-        .strip()
-        .lower()
-    )
-
-    if answer == "no":
-        log("[INFO] Skipping automatic SSH steps. Please perform them manually.\n")
-        step_complete()
-    else:
-        # Proceed with automatic SSH steps
-        skip_compile = not ("python_source" in getattr(args, "components", []))
-        skip_certbot = not ("certbot" in getattr(args, "components", []))
-        # Build script
-        install_script = []
-
-        # Optionally compile Python
-        if not skip_compile:
-            install_script.append(
-                """\
-cd /tmp
-curl -LO https://www.python.org/ftp/python/3.12.8/Python-3.12.8.tgz
-tar xzf Python-3.12.8.tgz
-cd Python-3.12.8
-./configure --enable-optimizations
-make -j 2
-make altinstall
-python3.12 --version
-python3.12 -m venv /home/ec2-user/venv
-/home/ec2-user/venv/bin/pip install --upgrade pip
-"""
-            )
-
-        # Optionally install certbot + apache
-        if not skip_certbot:
-            install_script.append(
-                f"""\
-yum install -y httpd mod_ssl certbot python3-certbot-apache
-systemctl enable httpd
-systemctl start httpd
-
-# Step 2: Configure a VirtualHost on port 80 for {domain}
-mkdir -p /etc/httpd/conf.d
-cat <<EOF >/etc/httpd/conf.d/{domain}.conf
-<VirtualHost *:80>
-    ServerName {domain}
-    DocumentRoot /var/www/html
-</VirtualHost>
-EOF
-
-systemctl restart httpd
-
-"""
-            )
-        # # Step 3: Re-run certbot (now that port 80 is serving)
-        # certbot --apache --non-interactive --agree-tos -d {domain} -m admin@{domain} || true
-
-        # If using git:
-        if source_method == "git" and repo_url:
-            install_script.append(
-                f"""\
-mkdir -p /home/ec2-user/app
-cd /home/ec2-user/app
-git init
-git remote add origin {repo_url}
-git pull origin main
-chown -R ec2-user:ec2-user /home/ec2-user/app
-if [ -f /home/ec2-user/venv/bin/pip ]; then
-  /home/ec2-user/venv/bin/pip install fastapi gradio uvicorn supervisor
-fi
-"""
-            )
-
-        final_install_script = "\n".join(install_script).strip()
-        if final_install_script:
-            script_filename = "post_launch_setup.sh"
-            with open(script_filename, "w") as f:
-                f.write(final_install_script + "\n")
-
-            scp_script_cmd = f"scp {script_filename} {ec2_name}:/home/ec2-user/"
-            run_cmd(scp_script_cmd, log)
-
-            ssh_cmd = f"ssh {ec2_name} 'sudo bash /home/ec2-user/{script_filename}'"
-            run_cmd(ssh_cmd, log)
-            log("[INFO] Finished post-launch install steps.\n")
-        else:
-            log("[INFO] No SSH steps needed (all were disabled or empty).\n")
-
-        step_complete()
-
-    # 14) Optional RDS
-    if enable_rds:
-        db_id = args.db_identifier
-        db_user = args.db_username
-        db_pass = args.db_password
-        endpoint = create_rds_postgres(db_id, db_user, db_pass, region, log)
-        log(f"[INFO] RDS endpoint: {endpoint}\n")
-
-    step_complete()
-
-    # 15) Done
-    if not progress_callback:
-        pbar.close()
-
-    log("\n[INFO] Deployment complete!\n")
-    log(f"[INFO] SSH example: ssh {ec2_name}\n")
+    log("\n[INFO] Deployment complete.\n")
     log(f"[INFO] Domain: {domain} => {eip}\n")
-
-
-import textwrap
-
-# One multi-line shell script kept in a single Python string
-PYTHON_INSTALL_CMDS = textwrap.dedent(
-    """
-    # 1) make sure metadata is fresh (quick, no full upgrade)
-    sudo dnf -y makecache
-
-    # 2) install Python 3.12 and dev headers from the AL2023 repos
-    sudo dnf -y install python3.12 python3.12-devel
-
-    # 3) create a project-level virtual-env in your home dir
-    python3.12 -m venv ~/venv312
-
-    # 4) activate and bootstrap pip/wheel/setuptools
-    source ~/venv312/bin/activate
-    python -m pip install --upgrade pip wheel setuptools
-    """
-).strip()
+    log(f"[INFO] SSH: ssh {ec2_name}\n")

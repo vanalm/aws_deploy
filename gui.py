@@ -1,3 +1,5 @@
+# file: gui.py
+
 import argparse
 import tkinter as tk
 
@@ -27,10 +29,10 @@ def launch_gui():
     # Default values
     defaults = {
         "aws_region": DEFAULT_REGION,
-        "ec2_name": "mauibuilder",
-        "key_name": "mauibuilder_keypair",
-        "domain": "mauibuilder.ai",
-        "local_path": "/Users/jacobvanalmelo/code/mauibuilder",
+        "ec2_name": "gps",
+        "key_name": "gps_keypair",
+        "domain": "congruencyassistant.com",
+        "local_path": "/Users/jacobvanalmelo/code/gps",
         "repo_url": "https://github.com/youruser/yourrepo.git",
         "db_identifier": "myDB",
         "db_username": "admin",
@@ -71,7 +73,7 @@ def launch_gui():
         cb.grid(row=0, column=idx, padx=5, pady=5)
         component_vars[key] = var
 
-    # RDS radio
+    # (Optional) RDS radio
     rds_frame = tk.LabelFrame(root, text="RDS Option")
     rds_frame.grid(row=row, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
     row += 1
@@ -152,9 +154,6 @@ def launch_gui():
     on_source_change()
 
     def on_deploy():
-        """
-        Gather all fields, close the GUI, then run deployment in the terminal.
-        """
         if not creds_ok:
             print("[ERROR] AWS CLI not ready or credentials missing.")
             root.destroy()
@@ -168,9 +167,9 @@ def launch_gui():
 
         # Which components (compile Python, certbot, etc)
         gui_args.components = []
-        for k, var in component_vars.items():
+        for key, var in component_vars.items():
             if var.get():
-                gui_args.components.append(k)
+                gui_args.components.append(key)
 
         # RDS
         if rds_var.get() == "yes":
@@ -191,10 +190,8 @@ def launch_gui():
             gui_args.repo_url = None
             gui_args.local_path = local_var.get().strip()
 
-        # Close GUI immediately
+        # Close GUI
         root.destroy()
-
-        # All logs and prompts happen in the terminal:
         deploy(gui_args)
 
     btn_deploy = tk.Button(root, text="Deploy", command=on_deploy)

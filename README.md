@@ -1,5 +1,9 @@
 # AWS Deployment Tool
 
+
+https://chatgpt.com/share/683c8a2b-fd50-800a-89fa-0d2d3244e3b0 
+"ec2 setup troubleshooting guide"
+
 A Python-based, modular toolkit for provisioning AWS infrastructure and deploying a FastAPI+Gradio (or similar) app on Amazon Linux EC2 (t3.micro). Supports:
 
 - VPC & Subnet (public or NAT) setup
